@@ -1267,6 +1267,10 @@ export interface Account {
       last_result_at?: string
       error_code?: string
     }
+    // SIWC（Sign in with ChatGPT）子模式：资格闸门 / 指纹快照 / 关联的管理凭据账号
+    siwc_gate?: SiwcGateState
+    siwc_fingerprint?: SiwcFingerprintResult
+    siwc_management_account_id?: number
   } & Record<string, unknown>)
   proxy_id: number | null
   proxy_fallback_origin_id?: number | null
@@ -1733,6 +1737,91 @@ export interface OpenAICodexPATCreateRequest {
   confirm_mixed_channel_risk?: boolean
 }
 
+// ==================== OpenAI SIWC (Sign in with ChatGPT) ====================
+
+export interface OpenAISiwcAuthUrlResponse {
+  auth_url: string
+  session_id: string
+  state: string
+  // 会话有效期（秒）
+  expires_in: number
+}
+
+export interface OpenAISiwcAuthUrlRequest {
+  proxy_id?: number | null
+  redirect_uri?: string
+  agent_name?: string
+}
+
+export interface OpenAISiwcExchangeRequest {
+  session_id: string
+  callback_url?: string
+  code?: string
+  state?: string
+  client_id?: string
+}
+
+export interface OpenAISiwcCreateRequest {
+  session_id: string
+  callback_url: string
+  name?: string
+  notes?: string | null
+  group_ids?: number[]
+  proxy_id?: number | null
+  concurrency?: number
+  priority?: number
+  rate_multiplier?: number
+  load_factor?: number | null
+  expires_at?: number | null
+  auto_pause_on_expired?: boolean
+  credential_extras?: Record<string, unknown>
+  extra?: Record<string, unknown>
+  skip_default_group_bind?: boolean
+  confirm_mixed_channel_risk?: boolean
+  // 同邮箱 Codex OAuth 账号，作为查额度 / 模型列表的管理凭据；不传则后端按 email 自动匹配
+  management_account_id?: number | null
+}
+
+export interface SiwcGateCheck {
+  at: string
+  status: number
+  code?: string
+  request_id?: string
+}
+
+export type SiwcFingerprintVerdict = 'ok' | 'suspect' | 'error'
+
+export interface SiwcFingerprintResult {
+  at: string
+  astra: number[]
+  luna: number[]
+  astra_p50: number
+  luna_p50: number
+  verdict: SiwcFingerprintVerdict
+}
+
+export type SiwcGateStateValue = 'blocked' | 'restorable' | 'clear'
+
+export interface SiwcGateState {
+  state: SiwcGateStateValue
+  code?: string
+  request_id?: string
+  blocked_at?: string
+  last_check_at?: string
+  next_check_at?: string
+  consecutive?: number
+  checks?: SiwcGateCheck[]
+  fingerprint?: SiwcFingerprintResult
+  cleared_at?: string
+  // 手动复检冷却剩余秒数
+  manual_cooldown_remaining?: number
+}
+
+export interface SiwcGateSummary {
+  blocked: number
+  restorable: number
+}
+
 export interface CodexSessionImportMessage {
   index: number
   name?: string
@@ -1742,9 +1831,12 @@ export interface CodexSessionImportMessage {
 export interface CodexSessionImportItem {
   index: number
   name?: string
-  action: 'created' | 'updated' | 'skipped' | 'failed'
+  // created_with_error：已建号但导入后强制刷新失败，message 带原因
+  action: 'created' | 'updated' | 'skipped' | 'failed' | 'created_with_error'
   account_id?: number
   message?: string
+  // "siwc" 表示该条目被识别为 SIWC 凭据
+  auth_mode?: string
 }
 
 export interface CodexSessionImportResult {

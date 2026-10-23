@@ -38,6 +38,17 @@
                 {{ t('admin.accounts.refreshToken') }}
               </button>
             </template>
+            <!-- SIWC 账号：资格闸门详情 / 降智指纹验证 -->
+            <template v-if="isSiwc">
+              <button data-testid="action-siwc-gate" @click="$emit('siwc-gate', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-rose-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+                <Icon name="shield" size="sm" />
+                {{ t('admin.accounts.siwcGate.menuGate') }}
+              </button>
+              <button data-testid="action-siwc-fingerprint" @click="$emit('siwc-fingerprint', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-cyan-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+                <Icon name="beaker" size="sm" />
+                {{ t('admin.accounts.siwcGate.menuFingerprint') }}
+              </button>
+            </template>
             <button v-if="isOpenAIOAuthParent" @click="$emit('create-spark-shadow', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-amber-600 hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="sparkles" size="sm" />
               {{ t('admin.accounts.createSparkShadow') }}
@@ -69,9 +80,10 @@ import { useI18n } from 'vue-i18n'
 import { Icon } from '@/components/icons'
 import type { Account } from '@/types'
 import { supportsAccountQuota } from '@/utils/accountQuota'
+import { isSiwcAccount } from '@/utils/siwcAccount'
 
 const props = defineProps<{ show: boolean; account: Account | null; anchorRect: DOMRect | null }>()
-const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow'])
+const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow', 'siwc-gate', 'siwc-fingerprint'])
 const { t } = useI18n()
 const menuRef = ref<HTMLElement | null>(null)
 const { width: viewportWidth, height: viewportHeight } = useWindowSize()
@@ -135,6 +147,7 @@ const isShadow = computed(() => props.account?.parent_account_id != null)
 // A "parent" OpenAI OAuth account is one that is NOT itself a shadow (parent_account_id == null)
 const isOpenAIOAuthParent = computed(() => isOpenAIOAuth.value && !isShadow.value)
 const supportsPrivacy = computed(() => (isAntigravityOAuth.value || isOpenAIOAuth.value) && !isShadow.value)
+const isSiwc = computed(() => isSiwcAccount(props.account))
 const hasQuotaLimit = computed(() => {
   return supportsAccountQuota(props.account?.type) && (
     (props.account?.quota_limit ?? 0) > 0 ||

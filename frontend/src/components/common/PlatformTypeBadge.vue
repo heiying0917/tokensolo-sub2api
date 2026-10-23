@@ -97,6 +97,8 @@ const typeLabel = computed(() => {
   if (props.platform === 'openai' && props.type === 'oauth') {
     if (normalizedAuthMode.value === 'agentidentity') return 'Agent Identity'
     if (normalizedAuthMode.value === 'personalaccesstoken') return 'PAT'
+    // SIWC（Sign in with ChatGPT）子模式
+    if (normalizedAuthMode.value === 'siwc') return 'SIWC'
   }
   switch (props.type) {
     case 'oauth':

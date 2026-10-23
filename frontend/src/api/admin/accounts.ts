@@ -21,6 +21,13 @@ import type {
   CodexSessionImportRequest,
   CodexSessionImportResult,
   OpenAICodexPATCreateRequest,
+  OpenAISiwcAuthUrlRequest,
+  OpenAISiwcAuthUrlResponse,
+  OpenAISiwcCreateRequest,
+  OpenAISiwcExchangeRequest,
+  SiwcFingerprintResult,
+  SiwcGateState,
+  SiwcGateSummary,
   CheckMixedChannelRequest,
   CheckMixedChannelResponse,
   UpstreamBillingProbeResult,
@@ -776,6 +783,62 @@ export async function createOpenAICodexPAT(payload: OpenAICodexPATCreateRequest)
   return data
 }
 
+// ==================== OpenAI SIWC (Sign in with ChatGPT) ====================
+
+const SIWC_LONG_TIMEOUT = 120000 // 指纹 / 恢复会实际打上游，后端最长 120s
+
+/** 生成 SIWC 授权链接（两步式第一步）。 */
+export async function generateSiwcAuthUrl(payload: OpenAISiwcAuthUrlRequest = {}): Promise<OpenAISiwcAuthUrlResponse> {
+  const { data } = await apiClient.post<OpenAISiwcAuthUrlResponse>('/admin/openai/siwc/generate-auth-url', payload)
+  return data
+}
+
+/** 用回调 URL 兑换 token（仅拿 token 信息，不建号；一般不用）。 */
+export async function exchangeSiwcCode(payload: OpenAISiwcExchangeRequest): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.post<Record<string, unknown>>('/admin/openai/siwc/exchange-code', payload)
+  return data
+}
+
+/** 回调 URL 一步建号。 */
+export async function createOpenAISiwc(payload: OpenAISiwcCreateRequest): Promise<Account> {
+  const { data } = await apiClient.post<Account>('/admin/openai/siwc/create-from-oauth', payload)
+  return data
+}
+
+/** 读取 SIWC 账号的订阅共享资格闸门状态。 */
+export async function getSiwcGate(id: number): Promise<SiwcGateState> {
+  const { data } = await apiClient.get<SiwcGateState>(`/admin/openai/siwc/accounts/${id}/gate`)
+  return data
+}
+
+/** 立即复检资格（60s 冷却，冷却中 409 SIWC_GATE_RECHECK_COOLDOWN）。 */
+export async function recheckSiwcGate(id: number): Promise<SiwcGateState> {
+  const { data } = await apiClient.post<SiwcGateState>(`/admin/openai/siwc/accounts/${id}/gate/recheck`)
+  return data
+}
+
+/** 恢复调度（仅 restorable；先跑指纹，suspect 时 409 SIWC_GATE_FINGERPRINT_SUSPECT）。 */
+export async function restoreSiwcGate(id: number): Promise<SiwcGateState> {
+  const { data } = await apiClient.post<SiwcGateState>(`/admin/openai/siwc/accounts/${id}/gate/restore`, undefined, {
+    timeout: SIWC_LONG_TIMEOUT
+  })
+  return data
+}
+
+/** 运行降智指纹验证（并发时 409 SIWC_FINGERPRINT_RUNNING）。 */
+export async function runSiwcFingerprint(id: number): Promise<SiwcFingerprintResult> {
+  const { data } = await apiClient.post<SiwcFingerprintResult>(`/admin/openai/siwc/accounts/${id}/fingerprint`, undefined, {
+    timeout: SIWC_LONG_TIMEOUT
+  })
+  return data
+}
+
+/** 全局闸门汇总：资格受限 / 待恢复数量。 */
+export async function getSiwcGateSummary(): Promise<SiwcGateSummary> {
+  const { data } = await apiClient.get<SiwcGateSummary>('/admin/openai/siwc/gate/summary')
+  return data
+}
+
 /**
  * Get Antigravity default model mapping from backend
  * @returns Default model mapping (from -> to)
@@ -1174,6 +1237,14 @@ export const accountsAPI = {
   importData,
   importCodexSession,
   createOpenAICodexPAT,
+  generateSiwcAuthUrl,
+  exchangeSiwcCode,
+  createOpenAISiwc,
+  getSiwcGate,
+  recheckSiwcGate,
+  restoreSiwcGate,
+  runSiwcFingerprint,
+  getSiwcGateSummary,
   getAntigravityDefaultModelMapping,
   batchDelete,
   batchClearError,
