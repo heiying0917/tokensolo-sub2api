@@ -112,9 +112,44 @@ func ProvideOpenAIOAuthService(
 	proxyRepo ProxyRepository,
 	oauthClient OpenAIOAuthClient,
 	privacyClientFactory PrivacyClientFactory,
+	sessionStore OpenAIOAuthSessionStore,
 ) *OpenAIOAuthService {
 	svc := NewOpenAIOAuthService(proxyRepo, oauthClient)
 	svc.SetPrivacyClientFactory(privacyClientFactory)
+	// 授权会话落 Redis，多副本下生成链接与换码可以落到不同 pod。
+	svc.SetSessionStore(sessionStore)
+	return svc
+}
+
+// ProvideOpenAISIWCOAuthService creates the Sign in with ChatGPT OAuth service.
+func ProvideOpenAISIWCOAuthService(
+	proxyRepo ProxyRepository,
+	client OpenAISIWCOAuthClient,
+	sessionStore OpenAIOAuthSessionStore,
+	accountRepo AccountRepository,
+) *OpenAISIWCOAuthService {
+	return NewOpenAISIWCOAuthService(proxyRepo, client, sessionStore, accountRepo)
+}
+
+// ProvideSIWCGateService creates and starts the SIWC eligibility gate.
+// 它依赖网关做探测，并把自己挂回网关的 403/429 汇聚点（网关不依赖它，无 wire 环）。
+func ProvideSIWCGateService(
+	accountRepo AccountRepository,
+	gateway *OpenAIGatewayService,
+	audit *AuditLogService,
+	lockCache LeaderLockCache,
+	db *sql.DB,
+	runtimeBlocker AccountRuntimeBlocker,
+	cfg *config.Config,
+) *SIWCGateService {
+	svc := NewSIWCGateService(accountRepo, gateway, audit)
+	svc.SetLeaderLock(lockCache, db)
+	if cfg != nil {
+		svc.SetAutoRestore(cfg.Gateway.SIWCAutoRestore)
+	}
+	svc.SetAccountRuntimeBlocker(runtimeBlocker)
+	gateway.SetSIWCGate(svc)
+	svc.Start()
 	return svc
 }
 
@@ -134,8 +169,15 @@ func ProvideTokenRefreshService(
 	proxyRepo ProxyRepository,
 	refreshAPI *OAuthRefreshAPI,
 	runtimeBlocker AccountRuntimeBlocker,
+	siwcOAuthService *OpenAISIWCOAuthService,
+	lockCache LeaderLockCache,
+	db *sql.DB,
 ) *TokenRefreshService {
 	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, geminiOAuthService, antigravityOAuthService, cacheInvalidator, schedulerCache, cfg, tempUnschedCache, grokOAuthService)
+	// OpenAI 平台按 auth_mode 分派到标准 / SIWC 刷新器
+	svc.SetOpenAISIWCOAuthService(siwcOAuthService)
+	// 多副本下每个周期只由一个实例扫描全表
+	svc.SetLeaderLock(lockCache, db)
 	// 注入 OpenAI privacy opt-out 依赖
 	svc.SetPrivacyDeps(privacyClientFactory, proxyRepo)
 	// 注入统一 OAuth 刷新 API（消除 TokenRefreshService 与 TokenProvider 之间的竞争条件）
@@ -167,9 +209,13 @@ func ProvideOpenAITokenProvider(
 	tokenCache GeminiTokenCache,
 	openaiOAuthService *OpenAIOAuthService,
 	refreshAPI *OAuthRefreshAPI,
+	siwcOAuthService *OpenAISIWCOAuthService,
 ) *OpenAITokenProvider {
 	p := NewOpenAITokenProvider(accountRepo, tokenCache, openaiOAuthService)
-	executor := NewOpenAITokenRefresher(openaiOAuthService, accountRepo)
+	executor := NewOpenAITokenRefresherComposite(
+		NewOpenAITokenRefresher(openaiOAuthService, accountRepo),
+		NewOpenAISIWCTokenRefresher(siwcOAuthService),
+	)
 	p.SetRefreshAPI(refreshAPI, executor)
 	p.SetRefreshPolicy(OpenAIProviderRefreshPolicy())
 	return p
@@ -509,8 +555,11 @@ func ProvideRateLimitService(
 	settingService *SettingService,
 	tokenCacheInvalidator TokenCacheInvalidator,
 	ollamaCloudUsage *OllamaCloudUsageService,
+	openAITokenProvider *OpenAITokenProvider,
 ) *RateLimitService {
 	svc := NewRateLimitService(accountRepo, usageRepo, cfg, geminiQuotaService, tempUnschedCache)
+	// SIWC 账号 401 后走锁内即时刷新
+	svc.SetOpenAISIWCUnauthorizedRecoverer(openAITokenProvider)
 	if healthCache, ok := tempUnschedCache.(OpenAIAPIKeyHealthCache); ok {
 		svc.SetOpenAIAPIKeyHealthCache(healthCache)
 	}
@@ -889,6 +938,8 @@ var ProviderSet = wire.NewSet(
 	NewOAuthService,
 	ProvideClaudeResetCreditService,
 	ProvideOpenAIOAuthService,
+	ProvideOpenAISIWCOAuthService,
+	ProvideSIWCGateService,
 	ProvideGrokOAuthService,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
 	NewGeminiOAuthService,

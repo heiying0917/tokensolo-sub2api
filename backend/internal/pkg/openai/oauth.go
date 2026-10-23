@@ -47,6 +47,12 @@ type OAuthSession struct {
 	ProxyURL     string    `json:"proxy_url,omitempty"`
 	RedirectURI  string    `json:"redirect_uri"`
 	CreatedAt    time.Time `json:"created_at"`
+	// AuthMode 区分 Codex（空）与 SIWC（"siwc"）授权会话，防止跨流程换码。
+	AuthMode string `json:"auth_mode,omitempty"`
+	// Nonce / DeviceID / AgentName 仅 SIWC 使用。
+	Nonce     string `json:"nonce,omitempty"`
+	DeviceID  string `json:"device_id,omitempty"`
+	AgentName string `json:"agent_name,omitempty"`
 }
 
 // SessionStore manages OAuth sessions in memory
@@ -248,6 +254,8 @@ type IDTokenClaims struct {
 	Aud           []string `json:"aud"` // OpenAI returns aud as an array
 	Exp           int64    `json:"exp"`
 	Iat           int64    `json:"iat"`
+	// Nonce 由授权请求带入，SIWC 换码时校验与会话一致。
+	Nonce string `json:"nonce,omitempty"`
 
 	// OpenAI specific claims (nested under https://api.openai.com/auth)
 	OpenAIAuth *OpenAIAuthClaims `json:"https://api.openai.com/auth,omitempty"`

@@ -77,6 +77,17 @@ func (s *OpenAIQuotaService) referralAccount(ctx context.Context, id int64, send
 		}
 		return resolveCredentialAccount(ctx, s.accountRepo, a)
 	}
+	if a.IsOpenAISIWC() {
+		// SIWC 令牌不能打 chatgpt.com：推荐信息借管理凭据读，发送邀请请在管理凭据上操作。
+		if sending {
+			return nil, infraerrors.New(http.StatusConflict, "OPENAI_REFERRAL_SIWC_ACCOUNT", "send invitations from the Codex management account")
+		}
+		mgmt, err := resolveOpenAISIWCManagementAccount(ctx, s.accountRepo, a)
+		if err != nil {
+			return nil, infraerrors.Newf(http.StatusBadRequest, "OPENAI_SIWC_MANAGEMENT_ACCOUNT_MISSING", "siwc referrals require a Codex OAuth management account: %v", err)
+		}
+		return mgmt, nil
+	}
 	return a, nil
 }
 

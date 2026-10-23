@@ -975,6 +975,10 @@ func (a *Account) isModelMappingSupported(requestedModel string) bool {
 	}
 	mapping := a.GetModelMapping()
 	if len(mapping) == 0 {
+		// SIWC 上游只认固定白名单，未知模型会被不可重试的 400 拒绝，调度阶段直接跳过。
+		if a.IsOpenAISIWC() {
+			return isOpenAISIWCServableModel(requestedModel)
+		}
 		if a.IsOpenAIOAuth() {
 			return isOpenAIOAuthServableModel(requestedModel)
 		}
@@ -1476,7 +1480,15 @@ func (a *Account) IsOpenAIOAuthLike() bool {
 // UsesOpenAICodexProtocol preserves legacy OpenAI gateway OAuth routing for
 // accounts whose platform is implicit, while adding OpenAI SetupToken.
 func (a *Account) UsesOpenAICodexProtocol() bool {
-	return a != nil && (a.Type == AccountTypeOAuth || a.IsOpenAIOAuthLike())
+	if a == nil {
+		return false
+	}
+	// SIWC 走 api.openai.com/v1/responses，不走 ChatGPT/Codex 内部协议，
+	// 所有 Codex 转换 / 身份头 / 指纹收敛对它都不适用。
+	if a.IsOpenAISIWC() {
+		return false
+	}
+	return a.Type == AccountTypeOAuth || a.IsOpenAIOAuthLike()
 }
 
 func (a *Account) IsOpenAIChatGPTSubscription() bool {
@@ -1949,7 +1961,8 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		return a.Platform == PlatformOpenAI &&
 			a.Type == AccountTypeOAuth &&
 			!a.IsOpenAIPersonalAccessToken() &&
-			!a.IsOpenAIAgentIdentity()
+			!a.IsOpenAIAgentIdentity() &&
+			!a.IsOpenAISIWC()
 	case OpenAIEndpointCapabilityResponses:
 		// Responses 支持状态由 accounts.extra 的自动探测标记决定，而非
 		// credentials 能力集。已探测确认不支持 /v1/responses 的 APIKey 上游
@@ -2187,6 +2200,10 @@ func (a *Account) IsOveragesEnabled() bool {
 // 字段缺失或类型不正确时，按 false（关闭）处理。
 func (a *Account) IsOpenAIPassthroughEnabled() bool {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false
+	}
+	// SIWC 转发不能把客户端的 Codex 身份头原样送到 api.openai.com，禁止透传。
+	if a.IsOpenAISIWC() {
 		return false
 	}
 	if enabled, ok := a.Extra["openai_passthrough"].(bool); ok {

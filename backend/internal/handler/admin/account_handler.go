@@ -69,6 +69,14 @@ type AccountHandler struct {
 	ollamaCloudUsage        *service.OllamaCloudUsageService
 	cfg                     *config.Config
 	opencodeGoUsage         *service.OpenCodeGoUsageService
+	openAITokenProvider     openAISIWCForceRefresher
+}
+
+// SetOpenAITokenProvider 注入 token provider，SIWC 账号的手动刷新经它的锁保护路径。
+func (h *AccountHandler) SetOpenAITokenProvider(provider *service.OpenAITokenProvider) {
+	if provider != nil {
+		h.openAITokenProvider = provider
+	}
 }
 
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.
@@ -1304,6 +1312,14 @@ func (h *AccountHandler) Test(c *gin.Context) {
 		AudioDataURL: req.AudioDataURL,
 	}
 
+	// SIWC 资格闸门：被封禁账号的手动测试本身就是高频探测，且测试成功会触发自动恢复，直接拒绝。
+	if account, err := h.adminService.GetAccount(c.Request.Context(), accountID); err == nil && account != nil {
+		if guardErr := service.SIWCGateGuardError(account); guardErr != nil {
+			response.ErrorFrom(c, guardErr)
+			return
+		}
+	}
+
 	// Use AccountTestService to test the account with SSE streaming
 	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt, req.Mode, opts); err != nil {
 		// Error already sent via SSE, just log
@@ -1414,6 +1430,18 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 	}
 
 	var newCredentials map[string]any
+
+	if account.IsOpenAISIWC() {
+		// SIWC：refresh_token 一次性轮转，必须走带分布式锁的统一刷新入口。
+		if h.openAITokenProvider == nil {
+			return nil, "", infraerrors.BadRequest("SIWC_REFRESH_UNAVAILABLE", "siwc refresh is not available: token provider not configured")
+		}
+		refreshed, err := h.openAITokenProvider.ForceRefresh(ctx, account)
+		if err != nil {
+			return nil, "", err
+		}
+		return refreshed, "", nil
+	}
 
 	if account.IsOpenAI() {
 		tokenInfo, err := h.openaiOAuthService.RefreshAccountToken(ctx, account)

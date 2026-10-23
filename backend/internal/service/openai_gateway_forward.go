@@ -1017,6 +1017,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, wsErr
 	}
 
+	// SIWC 上游不支持 compact / compaction_trigger / tool_search：在网关直接 400，
+	// 不打上游、不计账号错误。
+	if account.IsOpenAISIWC() {
+		if capErr := detectOpenAISIWCUnsupportedCapability(c, body); capErr != nil {
+			writeOpenAISIWCUnsupportedCapabilityResponse(c, capErr)
+			return nil, capErr
+		}
+	}
+
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 	// 国产模型默认 effort 补充：此处 reqModel 已被 mapping 重写为 billingModel。
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, reqModel)
@@ -1370,6 +1379,10 @@ func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {
 }
 
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
+	// SIWC 子模式：独立构建器，不进入下方任何 Codex 协议分支。
+	if account.IsOpenAISIWC() {
+		return s.buildOpenAISIWCUpstreamRequest(ctx, c, account, body, token, promptCacheKey)
+	}
 	// Determine target URL based on account type
 	var targetURL string
 	switch account.Type {

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
+	"github.com/google/uuid"
 )
 
 // tokenRefreshTempUnschedDuration token 刷新重试耗尽后临时不可调度的持续时间
@@ -34,7 +36,10 @@ const (
 	maxTokenRefreshLockSafetyMargin             = 5 * time.Second
 	defaultTokenRefreshCycleTimeout             = 4 * time.Minute
 	maxTokenRefreshCycleTimeout                 = time.Hour
-	defaultTokenRefreshCleanupTimeout           = 2 * time.Second
+	// tokenRefreshCycleLeaderLockKey 后台刷新周期的 leader 锁 key；slack 是锁 TTL 相对周期超时的冗余。
+	tokenRefreshCycleLeaderLockKey    = "token_refresh:cycle"
+	tokenRefreshCycleLeaderLockSlack  = 30 * time.Second
+	defaultTokenRefreshCleanupTimeout = 2 * time.Second
 )
 
 type tokenRefreshRegistration struct {
@@ -65,6 +70,11 @@ type TokenRefreshService struct {
 	tempUnschedCache TempUnschedCache // 用于清除 Redis 中的临时不可调度缓存
 	refreshAPI       *OAuthRefreshAPI // 统一刷新 API
 	runtimeBlocker   AccountRuntimeBlocker
+
+	// 多副本下每个周期只让一个实例扫描全表；账号级 Redis 刷新锁仍是最终兜底。
+	leaderLockCache LeaderLockCache
+	leaderLockDB    *sql.DB
+	instanceID      string
 
 	// OpenAI privacy: 刷新成功后检查并设置 training opt-out
 	privacyClientFactory PrivacyClientFactory
@@ -113,6 +123,7 @@ func NewTokenRefreshService(
 		stopCh:           make(chan struct{}),
 		runCtx:           runCtx,
 		runCancel:        runCancel,
+		instanceID:       uuid.NewString(),
 	}
 	if pager, ok := accountRepo.(OAuthRefreshCandidatePager); ok {
 		s.candidatePager = pager
@@ -171,6 +182,33 @@ func (s *TokenRefreshService) SetPrivacyDeps(factory PrivacyClientFactory, proxy
 }
 
 // SetRefreshAPI 注入统一的 OAuth 刷新 API
+// SetLeaderLock 注入跨实例 leader 锁（Redis，失败回退 PG advisory lock）。
+// 未注入时周期不加门控，保持单副本与单测行为。
+func (s *TokenRefreshService) SetLeaderLock(cache LeaderLockCache, db *sql.DB) {
+	s.leaderLockCache = cache
+	s.leaderLockDB = db
+}
+
+// SetOpenAISIWCOAuthService 把 OpenAI 平台的刷新器换成"标准 + SIWC"组合刷新器。
+// registrations 按 platform 唯一，SIWC 的分派发生在 executor 内部。
+func (s *TokenRefreshService) SetOpenAISIWCOAuthService(siwcService *OpenAISIWCOAuthService) {
+	if s == nil || siwcService == nil {
+		return
+	}
+	for i := range s.registrations {
+		if s.registrations[i].platform != PlatformOpenAI {
+			continue
+		}
+		standard, ok := s.registrations[i].executor.(*OpenAITokenRefresher)
+		if !ok {
+			continue
+		}
+		composite := NewOpenAITokenRefresherComposite(standard, NewOpenAISIWCTokenRefresher(siwcService))
+		s.registrations[i].refresher = composite
+		s.registrations[i].executor = composite
+	}
+}
+
 func (s *TokenRefreshService) SetRefreshAPI(api *OAuthRefreshAPI) {
 	s.refreshAPI = api
 }
@@ -490,6 +528,14 @@ func (s *TokenRefreshService) processRefreshContext(parent context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(parent, s.cycleTimeout())
 	defer cancel()
+
+	// 多副本：每个周期只有一个实例执行全表扫描；锁 TTL 必须大于周期最坏耗时。
+	release, isLeader := tryAcquireSingletonLeaderLock(ctx, s.leaderLockCache, s.leaderLockDB, tokenRefreshCycleLeaderLockKey, s.instanceID, s.cycleTimeout()+tokenRefreshCycleLeaderLockSlack)
+	if !isLeader {
+		slog.Debug("token_refresh.cycle_skipped_not_leader", "instance_id", s.instanceID)
+		return
+	}
+	defer release()
 
 	pager := s.candidatePager
 	if pager == nil {
@@ -1442,6 +1488,10 @@ func isNonRetryableRefreshError(err error) bool {
 // 未设置则调用 disableOpenAITraining 并持久化结果到 Extra。
 func (s *TokenRefreshService) ensureOpenAIPrivacy(ctx context.Context, account *Account) {
 	if account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
+		return
+	}
+	// SIWC 令牌不能打 chatgpt.com 设置页
+	if account.IsOpenAISIWC() {
 		return
 	}
 	if s.privacyClientFactory == nil {

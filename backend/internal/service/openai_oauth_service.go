@@ -14,7 +14,7 @@ import (
 
 // OpenAIOAuthService handles OpenAI OAuth authentication flows
 type OpenAIOAuthService struct {
-	sessionStore         *openai.SessionStore
+	sessionStore         OpenAIOAuthSessionStore
 	proxyRepo            ProxyRepository
 	oauthClient          OpenAIOAuthClient
 	privacyClientFactory PrivacyClientFactory // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
@@ -23,10 +23,23 @@ type OpenAIOAuthService struct {
 // NewOpenAIOAuthService creates a new OpenAI OAuth service
 func NewOpenAIOAuthService(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient) *OpenAIOAuthService {
 	return &OpenAIOAuthService{
-		sessionStore: openai.NewSessionStore(),
+		sessionStore: newMemoryOpenAIOAuthSessionStore(),
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
 	}
+}
+
+// SetSessionStore 注入跨副本共享的授权会话存储（生产为 Redis）。
+// 未注入时回退进程内 map，仅适合单副本或单测。
+func (s *OpenAIOAuthService) SetSessionStore(store OpenAIOAuthSessionStore) {
+	if store != nil {
+		s.sessionStore = store
+	}
+}
+
+// SessionStore 暴露会话存储，供 SIWC 授权 service 共用同一份存储。
+func (s *OpenAIOAuthService) SessionStore() OpenAIOAuthSessionStore {
+	return s.sessionStore
 }
 
 // SetPrivacyClientFactory 注入 ImpersonateChrome 客户端工厂，
@@ -90,7 +103,9 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		ProxyURL:     proxyURL,
 		CreatedAt:    time.Now(),
 	}
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Save(ctx, sessionID, session, openai.SessionTTL); err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_OAUTH_SESSION_FAILED", "failed to store oauth session: %v", err)
+	}
 
 	// Build authorization URL
 	authURL := openai.BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, normalizedPlatform)
@@ -132,9 +147,13 @@ type OpenAITokenInfo struct {
 // ExchangeCode exchanges authorization code for tokens
 func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExchangeCodeInput) (*OpenAITokenInfo, error) {
 	// Get session
-	session, ok := s.sessionStore.Get(input.SessionID)
-	if !ok {
+	session, err := s.sessionStore.Get(ctx, input.SessionID)
+	if err != nil || session == nil {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
+	}
+	if session.AuthMode != "" {
+		// SIWC 会话不能走 Codex 换码：client_id / token 端点 / resource 都不同。
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_SESSION_MODE_MISMATCH", "session belongs to a different oauth flow")
 	}
 	if input.State == "" {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_STATE_REQUIRED", "oauth state is required")
@@ -183,7 +202,7 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 	}
 
 	// Delete session after successful exchange
-	s.sessionStore.Delete(input.SessionID)
+	_ = s.sessionStore.Delete(ctx, input.SessionID)
 
 	tokenInfo := &OpenAITokenInfo{
 		AccessToken:  tokenResp.AccessToken,
@@ -343,6 +362,11 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	if account.Type != AccountTypeOAuth {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_ACCOUNT_TYPE", "account is not an OAuth account")
 	}
+	// SIWC 的刷新端点、client_id、resource 都不同，且 refresh_token 一次性轮转，
+	// 必须经 OpenAITokenProvider.ForceRefresh 走带分布式锁的统一入口，堵死所有旁路。
+	if account.IsOpenAISIWC() {
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_SIWC_REFRESH_PATH", "siwc accounts must be refreshed through the locked token provider path")
+	}
 
 	var proxyURL string
 	if account.ProxyID != nil && s.proxyRepo != nil {
@@ -438,9 +462,11 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	return NormalizeOpenAIPersonalAccessTokenCredentials(nil, tokenInfo, creds)
 }
 
-// Stop stops the session store cleanup goroutine
+// Stop stops the session store cleanup goroutine（仅进程内实现有后台协程）
 func (s *OpenAIOAuthService) Stop() {
-	s.sessionStore.Stop()
+	if stopper, ok := s.sessionStore.(interface{ Stop() }); ok {
+		stopper.Stop()
+	}
 }
 
 func normalizeOpenAIOAuthPlatform(platform string) string {

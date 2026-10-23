@@ -830,6 +830,10 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	if account == nil || !account.IsOAuth() {
 		return nil, nil
 	}
+	// SIWC 令牌不能打 chatgpt.com 的 Codex 探测端点
+	if account.IsOpenAISIWC() {
+		return nil, nil
+	}
 	accessToken := ""
 	if !account.IsOpenAIAgentIdentity() {
 		accessToken = account.GetOpenAIAccessToken()

@@ -366,3 +366,117 @@ func jitterLockWait(base time.Duration) time.Duration {
 	factor := minFactor + rand.Float64()*(maxFactor-minFactor)
 	return time.Duration(float64(base) * factor)
 }
+
+// forcedRefreshExecutor 包装 executor，让 NeedsRefresh 恒为 true（手动刷新）。
+type forcedRefreshExecutor struct {
+	OAuthRefreshExecutor
+}
+
+func (e forcedRefreshExecutor) NeedsRefresh(account *Account, _ time.Duration) bool {
+	return e.OAuthRefreshExecutor.CanRefresh(account)
+}
+
+func (e forcedRefreshExecutor) RequiresDistributedRefreshLock(account *Account) bool {
+	return executorRequiresDistributedLock(e.OAuthRefreshExecutor, account)
+}
+
+func (e forcedRefreshExecutor) PersistsDetached(account *Account) bool {
+	return executorPersistsDetached(e.OAuthRefreshExecutor, account)
+}
+
+// rejectedTokenRefreshExecutor 包装 executor：只有锁内回读到的 access_token
+// 仍等于被上游拒绝的那一个才刷新；已被别的副本换掉就直接复用新凭据。
+type rejectedTokenRefreshExecutor struct {
+	OAuthRefreshExecutor
+	rejectedAccessToken string
+}
+
+func (e rejectedTokenRefreshExecutor) NeedsRefresh(account *Account, _ time.Duration) bool {
+	if !e.OAuthRefreshExecutor.CanRefresh(account) {
+		return false
+	}
+	current := strings.TrimSpace(account.GetCredential("access_token"))
+	return current == "" || current == strings.TrimSpace(e.rejectedAccessToken)
+}
+
+func (e rejectedTokenRefreshExecutor) RequiresDistributedRefreshLock(account *Account) bool {
+	return executorRequiresDistributedLock(e.OAuthRefreshExecutor, account)
+}
+
+func (e rejectedTokenRefreshExecutor) PersistsDetached(account *Account) bool {
+	return executorPersistsDetached(e.OAuthRefreshExecutor, account)
+}
+
+// openAIForcedRefreshTimeout 手动 / 401 恢复刷新的总超时，脱离请求 ctx。
+const openAIForcedRefreshTimeout = 45 * time.Second
+
+func (p *OpenAITokenProvider) runLockedRefresh(parent context.Context, account *Account, executor OAuthRefreshExecutor) (*OAuthRefreshResult, error) {
+	if p == nil || p.refreshAPI == nil || p.executor == nil {
+		return nil, errors.New("openai token provider refresh api is not configured")
+	}
+	if account == nil {
+		return nil, errors.New("account is nil")
+	}
+	base := context.Background()
+	if parent != nil {
+		base = context.WithoutCancel(parent)
+	}
+	ctx, cancel := context.WithTimeout(withOAuthRefreshRequestPath(base), openAIForcedRefreshTimeout)
+	defer cancel()
+
+	cacheKey := OpenAITokenCacheKey(account)
+	result, err := p.refreshAPI.RefreshIfNeeded(ctx, account, executor, openAITokenRefreshSkew)
+	if err != nil {
+		return nil, err
+	}
+	if result != nil && result.Refreshed && p.tokenCache != nil {
+		// 旧缓存可能仍指向被轮转前的 access_token，刷新成功后立即清掉。
+		if delErr := p.tokenCache.DeleteAccessToken(ctx, cacheKey); delErr != nil {
+			slog.Warn("openai_token_provider.cache_delete_after_refresh_failed", "account_id", account.ID, "error", delErr)
+		}
+	}
+	return result, nil
+}
+
+// ForceRefresh 在统一锁保护下无条件刷新一次（管理端手动刷新、导入后 RT 所有权转移）。
+// 锁被其它副本持有时返回错误而不是绕锁刷新。
+func (p *OpenAITokenProvider) ForceRefresh(ctx context.Context, account *Account) (*Account, error) {
+	result, err := p.runLockedRefresh(ctx, account, forcedRefreshExecutor{p.executor})
+	if err != nil {
+		return nil, err
+	}
+	if result.LockHeld {
+		return nil, errors.New("token refresh is already in progress on another instance; retry shortly")
+	}
+	if result.Account == nil {
+		return nil, errors.New("token refresh returned no account")
+	}
+	return result.Account, nil
+}
+
+// RecoverAfterUnauthorized 上游 401 后的即时恢复：锁内回读 DB，
+// 只有当前 access_token 仍是被拒的那一个才刷新，避免多副本各刷一次轮转两次 RT。
+// 返回 recovered=true 表示账号已持有可用的新凭据（本副本刷新或别的副本已刷新）。
+func (p *OpenAITokenProvider) RecoverAfterUnauthorized(ctx context.Context, account *Account, rejectedAccessToken string) (bool, error) {
+	result, err := p.runLockedRefresh(ctx, account, rejectedTokenRefreshExecutor{
+		OAuthRefreshExecutor: p.executor,
+		rejectedAccessToken:  rejectedAccessToken,
+	})
+	if err != nil {
+		return false, err
+	}
+	if result.LockHeld {
+		// 别的副本正在刷新，交给它；本请求换号。
+		return true, nil
+	}
+	if result.Refreshed {
+		return true, nil
+	}
+	if result.Account != nil {
+		current := strings.TrimSpace(result.Account.GetCredential("access_token"))
+		if current != "" && current != strings.TrimSpace(rejectedAccessToken) {
+			return true, nil
+		}
+	}
+	return false, nil
+}

@@ -1015,6 +1015,10 @@ type GatewayConfig struct {
 	// ForceCodexCLI: 强制将 OpenAI `/v1/responses` 请求按 Codex CLI 处理。
 	// 用于网关未透传/改写 User-Agent 时的兼容兜底（默认关闭，避免影响其他客户端）。
 	ForceCodexCLI bool `mapstructure:"force_codex_cli"`
+	// SIWCAutoRestore: SIWC 资格闸门复检通过（403 user_not_eligible 解除）后是否自动恢复调度。
+	// 开启后会先自动跑 astra/luna 降智指纹，结果为 ok 才恢复；suspect / error 继续停用等人工处理。
+	// 默认关闭（与 cpa CPA_ELIGIBILITY_AUTO_RESTORE 默认一致），复检通过后需在后台手动点"恢复调度"。
+	SIWCAutoRestore bool `mapstructure:"siwc_auto_restore"`
 	// DisableCodexIdentityEnforcement: 关闭「强制统一 Codex 出站身份」。上游 /backend-api/codex
 	// 在容量紧张时按客户端身份分优先级降载，被降载的请求会拿到 HTTP 200 + 流内
 	// server_is_overloaded，该次请求失败。默认强制统一出口：所有 OAuth 出站的
@@ -2435,6 +2439,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.force_codex_cli", false)
+	viper.SetDefault("gateway.siwc_auto_restore", false)
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)

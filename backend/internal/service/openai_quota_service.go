@@ -470,6 +470,14 @@ func (s *OpenAIQuotaService) prepareUpstreamCall(ctx context.Context, accountID 
 		}
 		account = resolved
 	}
+	// SIWC 令牌不能打 chatgpt.com；额度就是同邮箱 Codex 管理凭据的额度（SIWC 不加额度）。
+	if account.IsOpenAISIWC() {
+		mgmt, merr := resolveOpenAISIWCManagementAccount(ctx, s.accountRepo, account)
+		if merr != nil {
+			return "", "", "", false, infraerrors.Newf(http.StatusBadRequest, "OPENAI_SIWC_MANAGEMENT_ACCOUNT_MISSING", "siwc quota requires a Codex OAuth management account with the same email: %v", merr)
+		}
+		account = mgmt
+	}
 
 	chatGPTAccountID = strings.TrimSpace(account.GetCredential("chatgpt_account_id"))
 	if chatGPTAccountID == "" {

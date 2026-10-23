@@ -19,10 +19,32 @@ import (
 // OpenAIOAuthHandler handles OpenAI OAuth-related operations
 type OpenAIOAuthHandler struct {
 	openaiOAuthService *service.OpenAIOAuthService
+	siwcOAuthService   *service.OpenAISIWCOAuthService
 	adminService       service.AdminService
 	quotaService       openAIQuotaService
 	referralService    openAIReferralService
 	rateLimitService   openAIAccountStateRecoverer
+	tokenProvider      openAISIWCForceRefresher
+	siwcGate           *service.SIWCGateService
+}
+
+// SetSIWCGateService 注入 SIWC 资格闸门服务。
+func (h *OpenAIOAuthHandler) SetSIWCGateService(gate *service.SIWCGateService) {
+	if gate != nil {
+		h.siwcGate = gate
+	}
+}
+
+// openAISIWCForceRefresher 由 service.OpenAITokenProvider 实现：带分布式锁的强制刷新。
+type openAISIWCForceRefresher interface {
+	ForceRefresh(ctx context.Context, account *service.Account) (*service.Account, error)
+}
+
+// SetOpenAITokenProvider 注入 token provider，SIWC 的手动刷新必须经它的锁保护路径。
+func (h *OpenAIOAuthHandler) SetOpenAITokenProvider(provider *service.OpenAITokenProvider) {
+	if provider != nil {
+		h.tokenProvider = provider
+	}
 }
 
 type openAIQuotaService interface {
@@ -82,12 +104,14 @@ func oauthPlatformFromPath(c *gin.Context) string {
 // NewOpenAIOAuthHandler creates a new OpenAI OAuth handler
 func NewOpenAIOAuthHandler(
 	openaiOAuthService *service.OpenAIOAuthService,
+	siwcOAuthService *service.OpenAISIWCOAuthService,
 	adminService service.AdminService,
 	quotaService *service.OpenAIQuotaService,
 	rateLimitService *service.RateLimitService,
 ) *OpenAIOAuthHandler {
 	h := &OpenAIOAuthHandler{
 		openaiOAuthService: openaiOAuthService,
+		siwcOAuthService:   siwcOAuthService,
 		adminService:       adminService,
 	}
 	// Assign through explicit nil checks: storing a nil *Service in an interface
@@ -264,6 +288,21 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 	// 再被凭据写守卫拦下的无谓副作用(外审第6轮)。
 	if account.IsCredentialShadow() {
 		response.BadRequest(c, "Cannot refresh spark shadow account; its credentials are managed by the parent account")
+		return
+	}
+
+	// SIWC：refresh_token 一次性轮转，必须走带分布式锁的统一刷新入口。
+	if account.IsOpenAISIWC() {
+		if h.tokenProvider == nil {
+			response.BadRequest(c, "siwc refresh is not available: token provider not configured")
+			return
+		}
+		refreshed, err := h.tokenProvider.ForceRefresh(c.Request.Context(), account)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.Success(c, dto.AccountFromService(refreshed))
 		return
 	}
 

@@ -1701,6 +1701,15 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_CODEX_MODELS_CREDENTIALS_FAILED", "resolve credential account: %v", err)
 	}
+	// SIWC 令牌对 /v1/models 返回空、打 chatgpt.com 会 401：清单借同邮箱 Codex 管理凭据拉取，
+	// 缺失时退回 SIWC 静态白名单（缓存 key 按凭据账号，兄弟凭据共享）。
+	if credAccount.IsOpenAISIWC() {
+		mgmt, merr := resolveOpenAISIWCManagementAccount(ctx, s.accountRepo, credAccount)
+		if merr != nil {
+			return buildOpenAISIWCStaticModelsManifest(ifNoneMatch)
+		}
+		credAccount = mgmt
+	}
 
 	clientVersion = strings.TrimSpace(clientVersion)
 	if clientVersion == "" {
@@ -2689,4 +2698,18 @@ func (d configuredCodexModelDescriptor) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(fields)
+}
+
+// buildOpenAISIWCStaticModelsManifest 在没有管理凭据时用 SIWC 静态白名单构造清单。
+func buildOpenAISIWCStaticModelsManifest(ifNoneMatch string) (*OpenAIModelsResponse, error) {
+	body, err := buildCodexModelsManifest(append([]string(nil), openAISIWCDefaultModels...), nil, nil, nil, nil)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_CODEX_MODELS_REQUEST_FAILED", "build siwc static models manifest: %v", err)
+	}
+	manifest := &OpenAIModelsResponse{Body: body, ETag: codexModelsManifestBodyETag(body)}
+	if codexModelsManifestETagMatches(ifNoneMatch, manifest.ETag) {
+		manifest.Body = nil
+		manifest.NotModified = true
+	}
+	return manifest, nil
 }

@@ -31,6 +31,8 @@ type RateLimitService struct {
 	settingService        *SettingService
 	tokenCacheInvalidator TokenCacheInvalidator
 	runtimeBlocker        AccountRuntimeBlocker
+	// siwcUnauthorizedRecoverer 处理 SIWC 账号 401 后的锁内即时刷新（可选）。
+	siwcUnauthorizedRecoverer openAISIWCUnauthorizedRecoverer
 	// ollamaCloudUsageProbe is the optional Ollama Cloud usage probe scheduler
 	// injected via SetOllamaCloudUsageProbeScheduler. See
 	// ratelimit_service_ollama_429.go for how real-Ollama 429s schedule an async
@@ -125,6 +127,16 @@ func (s *RateLimitService) SetOpenAI403CounterCache(cache OpenAI403CounterCache)
 // SetSettingService 设置系统设置服务（可选依赖）
 func (s *RateLimitService) SetSettingService(settingService *SettingService) {
 	s.settingService = settingService
+}
+
+// openAISIWCUnauthorizedRecoverer 由 OpenAITokenProvider 实现。
+type openAISIWCUnauthorizedRecoverer interface {
+	RecoverAfterUnauthorized(ctx context.Context, account *Account, rejectedAccessToken string) (bool, error)
+}
+
+// SetOpenAISIWCUnauthorizedRecoverer 注入 SIWC 401 即时恢复器（可选依赖）。
+func (s *RateLimitService) SetOpenAISIWCUnauthorizedRecoverer(recoverer openAISIWCUnauthorizedRecoverer) {
+	s.siwcUnauthorizedRecoverer = recoverer
 }
 
 // SetTokenCacheInvalidator 设置 token 缓存清理器（可选依赖）
@@ -472,6 +484,24 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			s.handleAuthError(ctx, authAccount, msg)
 			shouldDisable = true
 			break
+		}
+		// SIWC：access_token 只有 1 小时，401 多半是刚过期。锁内回读 DB，只有当前
+		// 凭据仍是被拒的那一个才刷新（避免多副本各轮转一次 RT）；恢复成功则本请求
+		// 换号重试、账号不进冷却，失败再落入下方通用 OAuth 401 路径。
+		if authAccount.IsOpenAISIWC() && s.siwcUnauthorizedRecoverer != nil {
+			if s.tokenCacheInvalidator != nil {
+				if err := s.tokenCacheInvalidator.InvalidateToken(ctx, authAccount); err != nil {
+					slog.Warn("siwc_401_invalidate_cache_failed", "account_id", authAccount.ID, "error", err)
+				}
+			}
+			recovered, recoverErr := s.siwcUnauthorizedRecoverer.RecoverAfterUnauthorized(ctx, authAccount, authAccount.GetCredential("access_token"))
+			if recoverErr != nil {
+				slog.Warn("siwc_401_recover_failed", "account_id", authAccount.ID, "error", recoverErr)
+			} else if recovered {
+				slog.Info("siwc_401_recovered", "account_id", authAccount.ID)
+				shouldDisable = true
+				break
+			}
 		}
 		// OAuth 账号在 401 错误时临时不可调度（给 token 刷新窗口）；非 OAuth 账号保持原有 SetError 行为。
 		if authAccount.Type == AccountTypeOAuth {
@@ -2218,6 +2248,11 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		return nil, err
+	}
+
+	// SIWC 资格闸门：被封禁 / 待恢复的账号不能靠一次测试成功绕过指纹恢复。
+	if guardErr := SIWCGateGuardError(account); guardErr != nil {
+		return nil, guardErr
 	}
 
 	result := &SuccessfulTestRecoveryResult{}
