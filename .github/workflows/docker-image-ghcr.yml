@@ -1,0 +1,95 @@
+# fork 专用：TKE 发版镜像构建（与 tokensolo / tokensolo-cpa 同名 workflow、同 tag 规则）
+#
+# - 触发 tag 形如 vYYYY.MM.DD.N（v2026.10.23.1），由 /tke-release skill 打出
+# - 用仓库根 Dockerfile 完整构建（前端 pnpm + 后端 Go），产出 ghcr.io/heiying0917/tokensolo-sub2api:<tag>（含 v）
+#   镜像名由 GITHUB_REPOSITORY 小写化推导，仓库改名/转移 owner 时无需改本文件
+# - 上游的 Release workflow（GoReleaser）只响应 semver tag，已在 release.yml 中排除日期 tag
+# - 旧 fork XuYang8026/sub2api 2026-09-10 首发验证：日期 tag 仅触发本 workflow，Release 未触发；构建约 7 分钟
+name: Publish Docker image (GHCR)
+
+on:
+  push:
+    tags:
+      - 'v20[0-9][0-9].[0-9][0-9].[0-9][0-9].[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to build (e.g., v2026.09.10.1)'
+        required: true
+        type: string
+
+jobs:
+  publish:
+    name: Build & push amd64 image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && 0 || 1 }}
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Resolve tag & image names
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+            if ! git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "Error: Tag '$TAG' does not exist in the repository"
+              exit 1
+            fi
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+
+          IMAGE_REPOSITORY="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "APP_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          echo "COMMIT=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          echo "IMAGE_REPOSITORY=$IMAGE_REPOSITORY" >> "$GITHUB_ENV"
+          echo "Building ghcr.io/$IMAGE_REPOSITORY:$TAG"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ env.IMAGE_REPOSITORY }}
+          tags: |
+            type=raw,value=${{ env.TAG }}
+            type=raw,value=latest
+
+      - name: Build & push amd64 image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          # Dockerfile 默认 GOPROXY/GOSUMDB 是国内镜像，GitHub Runner 上改回官方源
+          build-args: |
+            VERSION=${{ env.APP_VERSION }}
+            COMMIT=${{ env.COMMIT }}
+            DATE=${{ env.BUILD_DATE }}
+            GOPROXY=https://proxy.golang.org,direct
+            GOSUMDB=sum.golang.org
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false

@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+      # fork: 日期格式 tag（vYYYY.MM.DD.N）走 docker-image-ghcr.yml 构建 TKE 镜像，GoReleaser 无法解析该格式
+      - '!v20[0-9][0-9].[0-9][0-9].[0-9][0-9].[0-9]*'
   workflow_dispatch:
     inputs:
       tag:
