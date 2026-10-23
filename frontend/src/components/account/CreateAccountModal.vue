@@ -3780,6 +3780,13 @@
         :show-codex-session-import-option="form.platform === 'openai'"
         :show-agent-identity-option="form.platform === 'openai'"
         :show-codex-pat-option="form.platform === 'openai'"
+        :show-siwc-option="form.platform === 'openai'"
+        :show-siwc-json-option="form.platform === 'openai'"
+        :siwc-auth-url="siwcAuthUrl"
+        :siwc-state="siwcState"
+        :siwc-remaining-seconds="siwcRemainingSeconds"
+        :siwc-phase="siwcPhase"
+        :siwc-import-result="siwcImportResult"
         :show-sso-option="form.platform === 'grok'"
         :show-email-password-option="false"
         :show-manual-option="true"
@@ -3793,6 +3800,9 @@
         @validate-session-token="handleValidateSessionToken"
         @import-codex-session="handleOpenAIImportCodexSession"
         @import-codex-pat="handleOpenAIImportCodexPAT"
+        @generate-siwc-url="handleOpenAIGenerateSiwcUrl"
+        @create-siwc-account="handleOpenAICreateSiwc"
+        @import-siwc-json="handleOpenAIImportSiwcJson"
         @import-sso="handleGrokImportSSO"
         @authorize-password="handleGrokAuthorizePassword"
       />
@@ -4133,6 +4143,7 @@ import {
   type AuthInputMethod
 } from '@/composables/useAccountOAuth'
 import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
+import { useOpenAISiwcOAuth } from '@/composables/useOpenAISiwcOAuth'
 import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
 import { useGrokOAuth } from '@/composables/useGrokOAuth'
@@ -4144,6 +4155,7 @@ import type {
   CheckMixedChannelResponse,
   CreateAccountRequest,
   CodexSessionImportMessage,
+  CodexSessionImportResult,
   OpenAICompactMode,
   OpenAIResponsesMode,
   OpenAIEndpointCapability,
@@ -4228,6 +4240,8 @@ interface OAuthFlowExposed {
   sessionToken: string
   codexSession: string
   codexPAT: string
+  siwcCallback: string
+  siwcJson: string
   ssoCookie: string
   inputMethod: AuthInputMethod
   reset: () => void
@@ -4333,6 +4347,14 @@ const hideAccountLongContextBilling = computed(() => {
 // OAuth composables
 const oauth = useAccountOAuth() // For Anthropic OAuth
 const openaiOAuth = useOpenAIOAuth() // For OpenAI OAuth
+const openaiSiwcOAuth = useOpenAISiwcOAuth() // OpenAI SIWC（Sign in with ChatGPT）子模式
+// SIWC 会话状态透传给 OAuthAuthorizationFlow
+const siwcAuthUrl = computed(() => openaiSiwcOAuth.authUrl.value)
+const siwcState = computed(() => openaiSiwcOAuth.oauthState.value)
+const siwcRemainingSeconds = computed(() => openaiSiwcOAuth.remainingSeconds.value)
+const siwcPhase = computed(() => openaiSiwcOAuth.phase.value)
+// SIWC JSON 导入结果（回填给流程组件展示逐条结果）
+const siwcImportResult = ref<CodexSessionImportResult | null>(null)
 const geminiOAuth = useGeminiOAuth() // For Gemini OAuth
 const antigravityOAuth = useAntigravityOAuth() // For Antigravity OAuth
 const grokOAuth = useGrokOAuth() // For Grok OAuth
@@ -4355,7 +4377,7 @@ const currentSessionId = computed(() => {
 })
 
 const currentOAuthLoading = computed(() => {
-  if (form.platform === 'openai') return openaiOAuth.loading.value
+  if (form.platform === 'openai') return openaiOAuth.loading.value || openaiSiwcOAuth.loading.value
   if (form.platform === 'gemini') return geminiOAuth.loading.value
   if (form.platform === 'antigravity') return antigravityOAuth.loading.value
   if (form.platform === 'grok') return grokOAuth.loading.value
@@ -4363,7 +4385,7 @@ const currentOAuthLoading = computed(() => {
 })
 
 const currentOAuthError = computed(() => {
-  if (form.platform === 'openai') return openaiOAuth.error.value
+  if (form.platform === 'openai') return openaiSiwcOAuth.error.value || openaiOAuth.error.value
   if (form.platform === 'gemini') return geminiOAuth.error.value
   if (form.platform === 'antigravity') return antigravityOAuth.error.value
   if (form.platform === 'grok') return grokOAuth.error.value
@@ -5232,6 +5254,8 @@ watch(
     // Reset OAuth states
     oauth.resetState()
     openaiOAuth.resetState()
+    openaiSiwcOAuth.resetState()
+    siwcImportResult.value = null
 
     geminiOAuth.resetState()
     antigravityOAuth.resetState()
@@ -5720,6 +5744,8 @@ const resetForm = () => {
   geminiTierAIStudio.value = 'aistudio_free'
   oauth.resetState()
   openaiOAuth.resetState()
+  openaiSiwcOAuth.resetState()
+  siwcImportResult.value = null
   geminiOAuth.resetState()
   antigravityOAuth.resetState()
   grokOAuth.resetState()
@@ -6891,6 +6917,143 @@ const handleOpenAIImportCodexPAT = async (accessToken: string) => {
       error.response?.data?.message ||
       error.message ||
       t('admin.accounts.oauth.openai.codexPatImportFailed')
+    appStore.showError(oauthClient.error.value)
+  } finally {
+    oauthClient.loading.value = false
+  }
+}
+
+// ---------- OpenAI SIWC（Sign in with ChatGPT） ----------
+
+const handleOpenAIGenerateSiwcUrl = async (agentName: string) => {
+  openaiOAuth.error.value = ''
+  await openaiSiwcOAuth.generateAuthUrl({
+    proxy_id: form.proxy_id,
+    agent_name: agentName || undefined
+  })
+}
+
+// 回调 URL 一步建号：公共字段与 codex_pat 一致
+const handleOpenAICreateSiwc = async (payload: { callbackUrl: string; managementAccountId: number | null }) => {
+  const callbackUrl = payload.callbackUrl.trim()
+  if (!callbackUrl) {
+    openaiSiwcOAuth.error.value = t('admin.accounts.oauth.openai.siwcCallbackInvalid.empty')
+    return
+  }
+
+  const credentialExtras = buildOpenAICodexImportCredentialExtras()
+  if (credentialExtras === null) {
+    return
+  }
+
+  const extra = buildOpenAICodexImportExtra()
+  const account = await openaiSiwcOAuth.createFromCallback({
+    callback_url: callbackUrl,
+    name: form.name,
+    notes: form.notes || null,
+    proxy_id: form.proxy_id,
+    concurrency: form.concurrency,
+    load_factor: form.load_factor ?? undefined,
+    priority: form.priority,
+    rate_multiplier: form.rate_multiplier,
+    group_ids: form.group_ids,
+    expires_at: form.expires_at,
+    auto_pause_on_expired: autoPauseOnExpired.value,
+    credential_extras: Object.keys(credentialExtras).length > 0 ? credentialExtras : undefined,
+    extra: withUpstreamRequestIdHeader(extra),
+    management_account_id: payload.managementAccountId ?? undefined
+  })
+  if (!account) return
+
+  appStore.showSuccess(t('admin.accounts.accountCreated'))
+  emit('created')
+  handleClose()
+}
+
+// 导入 cpa 工具包产出的 SIWC JSON：复用 codex-session 导入接口，后端按 type / client_id 自动识别
+const handleOpenAIImportSiwcJson = async (content: string) => {
+  const oauthClient = openaiOAuth
+  const trimmed = content.trim()
+  if (!trimmed) {
+    oauthClient.error.value = t('admin.accounts.oauth.openai.siwcJsonInvalid.empty')
+    return
+  }
+
+  const credentialExtras = buildOpenAICodexImportCredentialExtras()
+  if (credentialExtras === null) {
+    return
+  }
+
+  oauthClient.loading.value = true
+  oauthClient.error.value = ''
+  siwcImportResult.value = null
+
+  try {
+    const extra = buildOpenAICodexImportExtra()
+    const result = await adminAPI.accounts.importCodexSession({
+      content: trimmed,
+      name: form.name,
+      notes: form.notes || null,
+      proxy_id: form.proxy_id,
+      concurrency: form.concurrency,
+      load_factor: form.load_factor ?? undefined,
+      priority: form.priority,
+      rate_multiplier: form.rate_multiplier,
+      group_ids: form.group_ids,
+      expires_at: form.expires_at,
+      auto_pause_on_expired: autoPauseOnExpired.value,
+      credential_extras: Object.keys(credentialExtras).length > 0 ? credentialExtras : undefined,
+      extra: withUpstreamRequestIdHeader(extra),
+      update_existing: true
+    })
+    siwcImportResult.value = result
+
+    const createdWithError = (result.items || []).filter((item) => item.action === 'created_with_error').length
+    const successCount = result.created + result.updated
+    const params = {
+      created: result.created,
+      updated: result.updated,
+      skipped: result.skipped,
+      failed: result.failed
+    }
+
+    // 全部成功且没有"建号但刷新失败"的条目：直接关闭
+    if (successCount > 0 && result.failed === 0 && createdWithError === 0) {
+      appStore.showSuccess(t('admin.accounts.oauth.openai.codexSessionImportSuccess', params))
+      emit('created')
+      handleClose()
+      return
+    }
+
+    const errorText = formatCodexImportMessages(result.errors)
+    const warningText = formatCodexImportMessages(result.warnings)
+    oauthClient.error.value = [errorText, warningText].filter(Boolean).join('\n')
+
+    if (createdWithError > 0) {
+      // 已建号但强制刷新失败：保留弹窗展示逐条结果，列表需要刷新
+      appStore.showWarning(t('admin.accounts.oauth.openai.siwcJsonCreatedWithError', { count: createdWithError }))
+      emit('created')
+      return
+    }
+
+    if (result.failed === 0) {
+      appStore.showWarning(t('admin.accounts.oauth.openai.codexSessionImportSuccess', params))
+      return
+    }
+
+    if (successCount > 0) {
+      appStore.showWarning(t('admin.accounts.oauth.openai.codexSessionImportPartial', params))
+      emit('created')
+      return
+    }
+
+    appStore.showError(t('admin.accounts.oauth.openai.siwcJsonImportFailed'))
+  } catch (error: any) {
+    oauthClient.error.value =
+      error.response?.data?.detail ||
+      error.response?.data?.message ||
+      error.message ||
+      t('admin.accounts.oauth.openai.siwcJsonImportFailed')
     appStore.showError(oauthClient.error.value)
   } finally {
     oauthClient.loading.value = false

@@ -1,0 +1,61 @@
+name: TKE Manual Release
+
+# ⚠️ 紧急备用路径（无冒烟测试，高风险）
+# 正常发版请使用本地 /tke-release skill（含 Phase 4 冒烟测试 + 6 分钟监控）。
+# 本 workflow 仅在本地 Claude Code / 本机环境不可用时手动触发，用完后需手动补跑冒烟测试。
+#
+# 前置：仓库 Secrets 需有 KUBECONFIG_TKE（base64 编码的 ~/.kube/tokensolo.config，与 tokensolo / tokensolo-cpa 仓库同一份）
+# 镜像：ghcr.io/heiying0917/tokensolo-sub2api:<tag>（由 GITHUB_REPOSITORY 推导）；集群 Deployment 的拉取密钥须已是 ghcr-secret-heiying0917
+# 触发方式：仅手动 workflow_dispatch，指定 tag（sub2api 只有 prod 环境）
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to deploy (e.g. v2026.10.23.1)'
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    name: Rolling deploy → TKE (prod)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    env:
+      HEALTH_URL: https://sub2api.tokensolo.com/health
+
+    steps:
+      - name: Resolve tag & image
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          IMAGE_REPO="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "IMAGE=ghcr.io/$IMAGE_REPO:$TAG" >> $GITHUB_ENV
+          echo "Deploying: ghcr.io/$IMAGE_REPO:$TAG"
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Write kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          # Secret 存 base64 编码内容，解码写入文件，避免 YAML 引号在存储时丢失
+          echo "${{ secrets.KUBECONFIG_TKE }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      # 单 Deployment，maxUnavailable=0：新 Pod readinessProbe 通过后才摘旧 Pod
+      - name: Update image & wait
+        run: |
+          kubectl set image deployment/sub2api sub2api=$IMAGE -n tokensolo
+          kubectl rollout status deployment/sub2api -n tokensolo --timeout=300s
+
+      - name: Health check
+        run: |
+          curl -fsS --retry 6 --retry-delay 5 --retry-connrefused "$HEALTH_URL"
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "部署失败，回滚 sub2api"
+          kubectl rollout undo deployment/sub2api -n tokensolo
+          kubectl rollout status deployment/sub2api -n tokensolo --timeout=300s

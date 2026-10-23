@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // OAuthRefreshExecutor 各平台实现的 OAuth 刷新执行器
@@ -38,13 +40,53 @@ const (
 	defaultRefreshLockTTL                   = 60 * time.Second
 	defaultRefreshLockReleaseTimeout        = 2 * time.Second
 	defaultRefreshPostPersistCleanupTimeout = 2 * time.Second
+	// defaultRefreshDetachedPersistTimeout 是脱离请求 ctx 的凭据落库超时（单次）。
+	defaultRefreshDetachedPersistTimeout = 5 * time.Second
 )
 
 var (
 	errOAuthRefreshAccountRereadFailed = errors.New("oauth refresh account reread failed")
 	errOAuthRefreshAccountStateChanged = errors.New("oauth refresh account state changed")
 	errOAuthRefreshCredentialPersist   = errors.New("oauth refresh credential persistence failed")
+	// errOAuthRefreshLockUnavailable：executor 要求分布式锁但 Redis 不可用，按 fail-closed 跳过刷新。
+	errOAuthRefreshLockUnavailable = errors.New("oauth refresh distributed lock unavailable")
 )
+
+// refreshDetachedPersistBackoffs 是脱离 ctx 落库的重试间隔。
+var refreshDetachedPersistBackoffs = []time.Duration{100 * time.Millisecond, 300 * time.Millisecond, time.Second}
+
+// distributedLockRequiredRefreshExecutor 由 executor 可选实现：
+// 返回 true 表示该账号的刷新必须持有分布式锁，锁不可用时宁可不刷（一次性轮转 RT 的平台）。
+type distributedLockRequiredRefreshExecutor interface {
+	RequiresDistributedRefreshLock(account *Account) bool
+}
+
+// detachedPersistRefreshExecutor 由 executor 可选实现：
+// 返回 true 表示刷新成功后的落库脱离请求 ctx，客户端断连不能丢弃已在上游轮转的凭据。
+type detachedPersistRefreshExecutor interface {
+	PersistsDetached(account *Account) bool
+}
+
+// OwnedRefreshLockCache 由 token cache 可选实现：带 owner 的刷新锁，
+// 释放时比对 owner（compare-and-delete），避免刷新超过 TTL 后误删别的实例新拿到的锁。
+type OwnedRefreshLockCache interface {
+	AcquireRefreshLockOwned(ctx context.Context, cacheKey, owner string, ttl time.Duration) (bool, error)
+	ReleaseRefreshLockOwned(ctx context.Context, cacheKey, owner string) error
+}
+
+func executorRequiresDistributedLock(executor OAuthRefreshExecutor, account *Account) bool {
+	if req, ok := executor.(distributedLockRequiredRefreshExecutor); ok {
+		return req.RequiresDistributedRefreshLock(account)
+	}
+	return false
+}
+
+func executorPersistsDetached(executor OAuthRefreshExecutor, account *Account) bool {
+	if det, ok := executor.(detachedPersistRefreshExecutor); ok {
+		return det.PersistsDetached(account)
+	}
+	return false
+}
 
 type oauthRefreshRequestPathKey struct{}
 
@@ -191,9 +233,31 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	defer localMu.Unlock()
 
 	// 1. 获取分布式锁
-	if api.tokenCache != nil {
-		acquired, lockErr := api.tokenCache.AcquireRefreshLock(ctx, cacheKey, api.lockTTL)
+	requiresLock := executorRequiresDistributedLock(executor, account)
+	if api.tokenCache == nil {
+		if requiresLock {
+			// fail-closed：没有分布式锁就不碰一次性轮转的 refresh_token。
+			return nil, &providerCycleContainmentRefreshError{err: errOAuthRefreshLockUnavailable}
+		}
+	} else {
+		lockOwner := ""
+		var acquired bool
+		var lockErr error
+		if owned, ok := api.tokenCache.(OwnedRefreshLockCache); ok {
+			lockOwner = newRefreshLockOwner()
+			acquired, lockErr = owned.AcquireRefreshLockOwned(ctx, cacheKey, lockOwner, api.lockTTL)
+		} else {
+			acquired, lockErr = api.tokenCache.AcquireRefreshLock(ctx, cacheKey, api.lockTTL)
+		}
 		if lockErr != nil {
+			if requiresLock {
+				slog.Warn("oauth_refresh_lock_unavailable_fail_closed",
+					"account_id", account.ID,
+					"cache_key", cacheKey,
+					"error", lockErr,
+				)
+				return nil, &providerCycleContainmentRefreshError{err: fmt.Errorf("%w: %v", errOAuthRefreshLockUnavailable, lockErr)}
+			}
 			// Redis 错误，降级为无锁刷新（进程内互斥锁仍生效）
 			slog.Warn("oauth_refresh_lock_failed_degraded",
 				"account_id", account.ID,
@@ -204,7 +268,7 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 			// 锁被其他 worker 持有
 			return &OAuthRefreshResult{LockHeld: true}, nil
 		} else {
-			defer api.releaseRefreshLock(ctx, cacheKey)
+			defer api.releaseRefreshLock(ctx, cacheKey, lockOwner)
 		}
 	}
 
@@ -255,11 +319,21 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 
 	// 4. 执行平台特定刷新逻辑
 	attemptedAccount := snapshotOAuthRefreshAccount(freshAccount)
+	persistDetached := executorPersistsDetached(executor, freshAccount)
 	newCredentials, refreshErr := executor.Refresh(ctx, freshAccount)
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		// A provider implementation may ignore cancellation and return late
-		// credentials. Never persist them after the attempt/cycle boundary.
-		return nil, ctxErr
+		if !persistDetached || refreshErr != nil || newCredentials == nil {
+			// A provider implementation may ignore cancellation and return late
+			// credentials. Never persist them after the attempt/cycle boundary.
+			return nil, ctxErr
+		}
+		// 一次性轮转的 refresh_token 已在上游作废旧值：即使调用方 ctx 已取消，
+		// 也必须把新凭据落库，否则账号永久死亡（下次刷新 refresh_token_reused）。
+		slog.Warn("oauth_refresh_persist_after_ctx_cancel",
+			"account_id", freshAccount.ID,
+			"platform", freshAccount.Platform,
+			"ctx_error", ctxErr,
+		)
 	}
 	if refreshErr != nil {
 		// 竞争恢复：invalid_grant 可能是另一个 worker 已消费了旧 refresh_token
@@ -350,6 +424,10 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 			// while the provider call was in flight. Return the durable row so
 			// post-refresh cache publication cannot restore that stale snapshot.
 			freshAccount = durableAccount
+		} else if persistDetached {
+			if updateErr := api.persistCredentialsDetached(ctx, freshAccount, newCredentials); updateErr != nil {
+				return nil, updateErr
+			}
 		} else if updateErr := persistAccountCredentials(ctx, api.accountRepo, freshAccount, newCredentials); updateErr != nil {
 			slog.Error("oauth_refresh_update_failed",
 				"account_id", freshAccount.ID,
@@ -372,16 +450,65 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	}, nil
 }
 
-func (api *OAuthRefreshAPI) releaseRefreshLock(parent context.Context, cacheKey string) {
+func (api *OAuthRefreshAPI) releaseRefreshLock(parent context.Context, cacheKey, owner string) {
 	cleanupParent := context.Background()
 	if parent != nil {
 		cleanupParent = context.WithoutCancel(parent)
 	}
 	ctx, cancel := context.WithTimeout(cleanupParent, defaultRefreshLockReleaseTimeout)
 	defer cancel()
-	if err := api.tokenCache.ReleaseRefreshLock(ctx, cacheKey); err != nil {
+	var err error
+	if owned, ok := api.tokenCache.(OwnedRefreshLockCache); ok && owner != "" {
+		err = owned.ReleaseRefreshLockOwned(ctx, cacheKey, owner)
+	} else {
+		err = api.tokenCache.ReleaseRefreshLock(ctx, cacheKey)
+	}
+	if err != nil {
 		slog.Warn("oauth_refresh_lock_release_failed", "cache_key", cacheKey, "error", err)
 	}
+}
+
+// newRefreshLockOwner 生成刷新锁的 owner 标识。
+func newRefreshLockOwner() string {
+	return uuid.NewString()
+}
+
+// persistCredentialsDetached 用脱离请求 ctx 的上下文落库，失败重试三次；
+// 仍失败时凭据已在上游轮转、本地没落盘，账号实际已死，立刻标 error 比留着反复
+// refresh_token_reused 干净。返回 providerCycleContainmentRefreshError 让后台不再重试。
+func (api *OAuthRefreshAPI) persistCredentialsDetached(parent context.Context, account *Account, credentials map[string]any) error {
+	base := context.Background()
+	if parent != nil {
+		base = context.WithoutCancel(parent)
+	}
+	var lastErr error
+	for attempt := 0; attempt <= len(refreshDetachedPersistBackoffs); attempt++ {
+		if attempt > 0 {
+			time.Sleep(refreshDetachedPersistBackoffs[attempt-1])
+		}
+		persistCtx, cancel := context.WithTimeout(base, defaultRefreshDetachedPersistTimeout)
+		lastErr = persistAccountCredentials(persistCtx, api.accountRepo, account, credentials)
+		cancel()
+		if lastErr == nil {
+			return nil
+		}
+		slog.Warn("oauth_refresh_detached_persist_retry",
+			"account_id", account.ID,
+			"attempt", attempt+1,
+			"error", lastErr,
+		)
+	}
+	slog.Error("oauth_refresh_detached_persist_failed",
+		"account_id", account.ID,
+		"platform", account.Platform,
+		"error", lastErr,
+	)
+	errCtx, cancel := context.WithTimeout(base, defaultRefreshDetachedPersistTimeout)
+	defer cancel()
+	if setErr := api.accountRepo.SetError(errCtx, account.ID, "oauth refresh rotated upstream but credential persistence failed; re-authorize"); setErr != nil {
+		slog.Error("oauth_refresh_detached_persist_set_error_failed", "account_id", account.ID, "error", setErr)
+	}
+	return &providerCycleContainmentRefreshError{err: fmt.Errorf("%w: %v", errOAuthRefreshCredentialPersist, lastErr)}
 }
 
 func (api *OAuthRefreshAPI) loadGrokDurableAccountAfterPersist(parent context.Context, cacheKey string, accountID int64) (*Account, error) {

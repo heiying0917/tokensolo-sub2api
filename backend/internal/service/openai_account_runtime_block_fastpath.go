@@ -122,6 +122,13 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 		return true
 	}
 
+	// SIWC 专属错误码：按 ChatGPT 账号生效，上游不冷却，交给资格闸门按邮箱联动处理。
+	if account != nil && account.IsOpenAISIWC() {
+		if handled, disable := s.handleOpenAISIWCUpstreamError(stateCtx, account, statusCode, headers, responseBody); handled {
+			return disable
+		}
+	}
+
 	if account != nil && account.Platform == PlatformOpenAI && isOpenAIContextWindowError("", responseBody) {
 		return false
 	}

@@ -273,6 +273,10 @@ gateway:
   #
   # 注意：开启后会影响所有客户端的行为（不仅限于 VS Code / Codex CLI），请谨慎开启。
   force_codex_cli: false
+  # Auto-restore SIWC accounts after the eligibility recheck passes (env: GATEWAY_SIWC_AUTO_RESTORE).
+  # SIWC 资格闸门复检通过后自动恢复调度：先自动跑 astra/luna 降智指纹，ok 才恢复；
+  # 疑似降智或指纹失败时继续停用。默认关闭，需在后台手动点"恢复调度"。
+  siwc_auto_restore: false
   # Stop rewriting load-shed Codex originators to the official CLI identity.
   # 关闭「把落在上游降载桶的 Codex originator 改写为官方 CLI 身份（codex_cli_rs）」。
   #

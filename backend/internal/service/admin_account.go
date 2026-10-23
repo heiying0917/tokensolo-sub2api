@@ -1309,6 +1309,12 @@ func (s *adminServiceImpl) RefreshAccountCredentials(ctx context.Context, id int
 }
 
 func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Account, error) {
+	// SIWC 资格闸门：手动清错也必须走闸门的指纹恢复流程。
+	if current, err := s.accountRepo.GetByID(ctx, id); err == nil && current != nil {
+		if guardErr := SIWCGateGuardError(current); guardErr != nil {
+			return nil, guardErr
+		}
+	}
 	if err := s.accountRepo.ClearError(ctx, id); err != nil {
 		return nil, err
 	}
@@ -1666,6 +1672,10 @@ func (s *adminServiceImpl) EnsureOpenAIPrivacy(ctx context.Context, account *Acc
 		return ""
 	}
 	if account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
+		return ""
+	}
+	// SIWC 令牌不能打 chatgpt.com 设置页
+	if account.IsOpenAISIWC() {
 		return ""
 	}
 	if s.privacyClientFactory == nil {

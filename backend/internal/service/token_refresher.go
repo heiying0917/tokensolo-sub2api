@@ -95,6 +95,10 @@ func (r *OpenAITokenRefresher) CanRefresh(account *Account) bool {
 	if account.IsCredentialShadow() {
 		return false
 	}
+	// SIWC 子模式由 OpenAISIWCTokenRefresher 处理，标准刷新端点对它无效。
+	if account.IsOpenAISIWC() {
+		return false
+	}
 	return account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth
 }
 

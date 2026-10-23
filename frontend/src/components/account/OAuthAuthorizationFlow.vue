@@ -11,10 +11,42 @@
 
         <!-- Auth Method Selection -->
         <div v-if="showMethodSelection" class="mb-4">
+          <!-- OpenAI：Codex 与 SIWC 是两套独立授权体系，用 tab 分开 -->
+          <div v-if="authFamilyTabsEnabled" class="mb-3" data-testid="oauth-family-tabs">
+            <div class="flex gap-1 rounded-lg bg-blue-100/70 p-1 dark:bg-blue-900/40">
+              <button
+                type="button"
+                data-testid="oauth-family-codex"
+                class="flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors"
+                :class="authFamily === 'codex'
+                  ? 'bg-white text-blue-700 shadow-sm dark:bg-gray-800 dark:text-blue-300'
+                  : 'text-blue-700/70 hover:text-blue-800 dark:text-blue-300/70'"
+                @click="switchAuthFamily('codex')"
+              >
+                {{ t('admin.accounts.oauth.openai.familyCodex') }}
+              </button>
+              <button
+                type="button"
+                data-testid="oauth-family-siwc"
+                class="flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors"
+                :class="authFamily === 'siwc'
+                  ? 'bg-white text-blue-700 shadow-sm dark:bg-gray-800 dark:text-blue-300'
+                  : 'text-blue-700/70 hover:text-blue-800 dark:text-blue-300/70'"
+                @click="switchAuthFamily('siwc')"
+              >
+                {{ t('admin.accounts.oauth.openai.familySiwc') }}
+              </button>
+            </div>
+            <p class="mt-2 text-xs text-blue-700 dark:text-blue-300">
+              {{ authFamily === 'siwc'
+                ? t('admin.accounts.oauth.openai.familySiwcDesc')
+                : t('admin.accounts.oauth.openai.familyCodexDesc') }}
+            </p>
+          </div>
           <label class="mb-2 block text-sm font-medium text-blue-800 dark:text-blue-300">
             {{ methodLabel }}
           </label>
-          <div class="flex flex-wrap gap-4">
+          <div v-if="!authFamilyTabsEnabled || authFamily === 'codex'" class="flex flex-wrap gap-4">
             <label v-if="showManualOption" class="flex cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
@@ -134,6 +166,30 @@
               />
               <span class="text-sm text-blue-900 dark:text-blue-200">{{
                 t('admin.accounts.oauth.openai.codexPatAuth')
+              }}</span>
+            </label>
+          </div>
+          <div v-else class="flex flex-wrap gap-4" data-testid="oauth-siwc-methods">
+            <label v-if="showSiwcOption" class="flex cursor-pointer items-center gap-2" data-testid="oauth-method-siwc">
+              <input
+                v-model="inputMethod"
+                type="radio"
+                value="siwc"
+                class="text-blue-600 focus:ring-blue-500"
+              />
+              <span class="text-sm text-blue-900 dark:text-blue-200">{{
+                t('admin.accounts.oauth.openai.siwcAuth')
+              }}</span>
+            </label>
+            <label v-if="showSiwcJsonOption" class="flex cursor-pointer items-center gap-2" data-testid="oauth-method-siwc-json">
+              <input
+                v-model="inputMethod"
+                type="radio"
+                value="siwc_json"
+                class="text-blue-600 focus:ring-blue-500"
+              />
+              <span class="text-sm text-blue-900 dark:text-blue-200">{{
+                t('admin.accounts.oauth.openai.siwcJsonAuth')
               }}</span>
             </label>
           </div>
@@ -523,6 +579,293 @@
           </div>
         </div>
 
+        <!-- SIWC (Sign in with ChatGPT): 生成链接 → 粘贴回调 → 一步建号 -->
+        <div v-if="inputMethod === 'siwc'" class="space-y-4" data-testid="siwc-section">
+          <div
+            class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
+          >
+            <p class="mb-3 text-sm text-blue-700 dark:text-blue-300">
+              {{ t('admin.accounts.oauth.openai.siwcDesc') }}
+            </p>
+
+            <!-- Step 1: 生成授权链接 -->
+            <div class="mb-4 flex items-start gap-3">
+              <div class="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white">1</div>
+              <div class="min-w-0 flex-1 space-y-3">
+                <p class="font-medium text-blue-900 dark:text-blue-200">
+                  {{ t('admin.accounts.oauth.openai.siwcStep1') }}
+                </p>
+                <div>
+                  <label class="input-label">{{ t('admin.accounts.oauth.openai.siwcAgentNameLabel') }}</label>
+                  <input
+                    v-model="siwcAgentName"
+                    type="text"
+                    class="input w-full text-sm"
+                    :placeholder="t('admin.accounts.oauth.openai.siwcAgentNamePlaceholder')"
+                    :disabled="loading || siwcHasUrl"
+                    data-testid="siwc-agent-name"
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.accounts.oauth.openai.siwcAgentNameHint') }}
+                  </p>
+                </div>
+                <button
+                  v-if="!siwcHasUrl"
+                  type="button"
+                  class="btn btn-primary text-sm"
+                  :disabled="loading"
+                  data-testid="siwc-generate-url"
+                  @click="handleGenerateSiwcUrl"
+                >
+                  <svg v-if="loading && siwcPhase === 'generating'" class="-ml-1 mr-2 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <Icon v-else name="link" size="sm" class="mr-2" />
+                  {{ loading && siwcPhase === 'generating' ? t('admin.accounts.oauth.generating') : t('admin.accounts.oauth.openai.siwcGenerateUrl') }}
+                </button>
+                <div v-else class="space-y-2">
+                  <div class="flex items-center gap-2">
+                    <input
+                      :value="siwcAuthUrl"
+                      readonly
+                      type="text"
+                      class="input flex-1 bg-gray-50 font-mono text-xs dark:bg-gray-700"
+                      data-testid="siwc-auth-url"
+                    />
+                    <button
+                      type="button"
+                      class="btn btn-secondary p-2"
+                      :title="t('admin.accounts.oauth.openai.siwcCopyUrl')"
+                      @click="handleCopySiwcUrl"
+                    >
+                      <Icon v-if="copied" name="check" size="sm" class="text-green-500" :stroke-width="2" />
+                      <Icon v-else name="copy" size="sm" />
+                    </button>
+                    <a
+                      :href="siwcAuthUrl"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="btn btn-secondary p-2"
+                      :title="t('admin.accounts.oauth.openai.siwcOpenInNewWindow')"
+                    >
+                      <Icon name="externalLink" size="sm" />
+                    </a>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-3 text-xs">
+                    <span
+                      v-if="siwcPhase === 'expired'"
+                      class="text-red-600 dark:text-red-400"
+                      data-testid="siwc-expired"
+                    >
+                      {{ t('admin.accounts.oauth.openai.siwcExpired') }}
+                    </span>
+                    <span v-else class="text-gray-500 dark:text-gray-400" data-testid="siwc-countdown">
+                      {{ t('admin.accounts.oauth.openai.siwcExpiresIn', { time: siwcCountdownText }) }}
+                    </span>
+                    <button
+                      type="button"
+                      class="text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                      :disabled="loading"
+                      @click="handleGenerateSiwcUrl"
+                    >
+                      <Icon name="refresh" size="xs" class="mr-1 inline" />
+                      {{ t('admin.accounts.oauth.openai.siwcRegenerate') }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 2: 粘贴回调 URL -->
+            <div class="mb-4 flex items-start gap-3">
+              <div class="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white">2</div>
+              <div class="min-w-0 flex-1">
+                <p class="mb-2 font-medium text-blue-900 dark:text-blue-200">
+                  {{ t('admin.accounts.oauth.openai.siwcStep2') }}
+                </p>
+                <label class="input-label">
+                  <Icon name="link" size="sm" class="mr-1 inline text-blue-500" />
+                  {{ t('admin.accounts.oauth.openai.siwcCallbackLabel') }}
+                </label>
+                <textarea
+                  v-model="siwcCallbackInput"
+                  rows="3"
+                  class="input w-full resize-none font-mono text-xs"
+                  :class="siwcCallbackErrorText ? 'border-red-400 focus:border-red-500 focus:ring-red-500' : ''"
+                  :placeholder="t('admin.accounts.oauth.openai.siwcCallbackPlaceholder')"
+                  :disabled="!siwcHasUrl || loading"
+                  spellcheck="false"
+                  data-testid="siwc-callback-input"
+                ></textarea>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  <Icon name="infoCircle" size="xs" class="mr-1 inline" />
+                  {{ t('admin.accounts.oauth.openai.siwcCallbackHint') }}
+                </p>
+                <p
+                  v-if="siwcCallbackErrorText"
+                  class="mt-1 text-xs text-red-600 dark:text-red-400"
+                  data-testid="siwc-callback-error"
+                >
+                  {{ siwcCallbackErrorText }}
+                </p>
+                <p
+                  v-else-if="siwcCallbackValidation.ok"
+                  class="mt-1 text-xs text-green-600 dark:text-green-400"
+                  data-testid="siwc-callback-ok"
+                >
+                  <Icon name="checkCircle" size="xs" class="mr-1 inline" />
+                  {{ t('admin.accounts.oauth.openai.siwcCallbackValid') }}
+                </p>
+              </div>
+            </div>
+
+            <!-- Step 3: 关联管理凭据（可选） -->
+            <div class="mb-4 flex items-start gap-3">
+              <div class="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white">3</div>
+              <div class="min-w-0 flex-1">
+                <p class="mb-2 font-medium text-blue-900 dark:text-blue-200">
+                  {{ t('admin.accounts.oauth.openai.siwcManagementLabel') }}
+                </p>
+                <select
+                  v-model="siwcManagementAccountId"
+                  class="input w-full text-sm"
+                  :disabled="loading || siwcManagementLoading"
+                  data-testid="siwc-management-select"
+                >
+                  <option :value="null">{{ t('admin.accounts.oauth.openai.siwcManagementNone') }}</option>
+                  <option v-for="option in siwcManagementOptions" :key="option.id" :value="option.id">
+                    #{{ option.id }} · {{ option.name }}<template v-if="option.email"> · {{ option.email }}</template>
+                  </option>
+                </select>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.accounts.oauth.openai.siwcManagementHint') }}
+                </p>
+                <p v-if="siwcManagementLoadFailed" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                  {{ t('admin.accounts.oauth.openai.siwcManagementLoadFailed') }}
+                </p>
+              </div>
+            </div>
+
+            <div
+              v-if="error"
+              class="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-700 dark:bg-red-900/30"
+            >
+              <p class="whitespace-pre-line text-sm text-red-600 dark:text-red-400">
+                {{ error }}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              class="btn btn-primary w-full"
+              :disabled="!canSubmitSiwc"
+              data-testid="siwc-submit"
+              @click="handleSubmitSiwc"
+            >
+              <svg v-if="loading && siwcPhase === 'submitting'" class="-ml-1 mr-2 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <Icon v-else name="sparkles" size="sm" class="mr-2" />
+              {{ loading && siwcPhase === 'submitting' ? t('admin.accounts.oauth.openai.siwcSubmitting') : t('admin.accounts.oauth.openai.siwcSubmitAndCreate') }}
+            </button>
+          </div>
+        </div>
+
+        <!-- SIWC 凭据 JSON 批量导入（cpa 工具包产出） -->
+        <div v-if="inputMethod === 'siwc_json'" class="space-y-4" data-testid="siwc-json-section">
+          <div
+            class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
+          >
+            <p class="mb-3 text-sm text-blue-700 dark:text-blue-300">
+              {{ t('admin.accounts.oauth.openai.siwcJsonDesc') }}
+            </p>
+
+            <div class="mb-4">
+              <label class="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-300">
+                <Icon name="key" size="sm" class="text-blue-500" />
+                {{ t('admin.accounts.oauth.openai.siwcJsonInputLabel') }}
+                <span
+                  v-if="siwcJsonPrecheck.count > 1"
+                  class="rounded-full bg-blue-500 px-2 py-0.5 text-xs text-white"
+                >
+                  {{ t('admin.accounts.oauth.keysCount', { count: siwcJsonPrecheck.count }) }}
+                </span>
+              </label>
+              <textarea
+                v-model="siwcJsonInput"
+                rows="8"
+                class="input w-full resize-y font-mono text-sm"
+                :placeholder="t('admin.accounts.oauth.openai.siwcJsonPlaceholder')"
+                spellcheck="false"
+                data-testid="siwc-json-input"
+              ></textarea>
+              <p class="mt-1 text-xs text-blue-600 dark:text-blue-400">
+                {{ t('admin.accounts.oauth.openai.siwcJsonHint') }}
+              </p>
+              <p
+                v-if="siwcJsonErrorText"
+                class="mt-1 text-xs text-red-600 dark:text-red-400"
+                data-testid="siwc-json-error"
+              >
+                {{ siwcJsonErrorText }}
+              </p>
+            </div>
+
+            <div
+              v-if="error"
+              class="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-700 dark:bg-red-900/30"
+            >
+              <p class="whitespace-pre-line text-sm text-red-600 dark:text-red-400">
+                {{ error }}
+              </p>
+            </div>
+
+            <!-- 导入结果 -->
+            <div
+              v-if="siwcImportResult?.items?.length"
+              class="mb-4 rounded-lg border border-gray-200 dark:border-gray-700"
+              data-testid="siwc-json-result"
+            >
+              <div class="border-b border-gray-200 px-3 py-2 text-xs font-semibold text-gray-600 dark:border-gray-700 dark:text-gray-300">
+                {{ t('admin.accounts.oauth.openai.siwcJsonResultTitle') }}
+              </div>
+              <ul class="divide-y divide-gray-100 text-xs dark:divide-gray-700">
+                <li
+                  v-for="item in siwcImportResult.items"
+                  :key="item.index"
+                  class="flex items-start gap-2 px-3 py-2"
+                >
+                  <span :class="['inline-flex flex-shrink-0 rounded px-1.5 py-0.5 font-medium', siwcImportActionClass(item.action)]">
+                    {{ t(`admin.accounts.oauth.openai.siwcJsonAction.${item.action}`) }}
+                  </span>
+                  <span class="min-w-0 flex-1 break-all text-gray-700 dark:text-gray-200">
+                    #{{ item.index }}<template v-if="item.name"> {{ item.name }}</template>
+                    <template v-if="item.account_id"> · ID {{ item.account_id }}</template>
+                    <span v-if="item.message" class="ml-1 text-gray-500 dark:text-gray-400">{{ item.message }}</span>
+                  </span>
+                </li>
+              </ul>
+            </div>
+
+            <button
+              type="button"
+              class="btn btn-primary w-full"
+              :disabled="loading || !siwcJsonPrecheck.ok"
+              data-testid="siwc-json-import"
+              @click="handleImportSiwcJson"
+            >
+              <svg v-if="loading" class="-ml-1 mr-2 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <Icon v-else name="upload" size="sm" class="mr-2" />
+              {{ loading ? t('admin.accounts.oauth.openai.validating') : t('admin.accounts.oauth.openai.siwcJsonImportAndCreate') }}
+            </button>
+          </div>
+        </div>
+
         <!-- Cookie Auto-Auth Form -->
         <div v-if="inputMethod === 'cookie'" class="space-y-4">
           <div
@@ -899,8 +1242,10 @@ import { useI18n } from 'vue-i18n'
 import { useClipboard } from '@/composables/useClipboard'
 import Icon from '@/components/icons/Icon.vue'
 import type { AddMethod, AuthInputMethod } from '@/composables/useAccountOAuth'
-import type { AccountPlatform } from '@/types'
+import type { AccountPlatform, CodexSessionImportItem, CodexSessionImportResult } from '@/types'
 import { adminAPI } from '@/api/admin'
+import { precheckSiwcJson, validateSiwcCallback } from '@/utils/siwcCallback'
+import type { SiwcOAuthPhase } from '@/composables/useOpenAISiwcOAuth'
 
 interface Props {
   addMethod: AddMethod
@@ -920,6 +1265,17 @@ interface Props {
   showCodexSessionImportOption?: boolean
   showAgentIdentityOption?: boolean
   showCodexPatOption?: boolean
+  /** OpenAI SIWC（Sign in with ChatGPT）授权子模式。 */
+  showSiwcOption?: boolean
+  /** 导入 cpa 工具包产出的 SIWC 凭据 JSON。 */
+  showSiwcJsonOption?: boolean
+  /** SIWC 会话状态（由父组件的 useOpenAISiwcOAuth 提供）。 */
+  siwcAuthUrl?: string
+  siwcState?: string
+  siwcRemainingSeconds?: number
+  siwcPhase?: SiwcOAuthPhase
+  /** SIWC JSON 导入结果（父组件导入后回填用于展示）。 */
+  siwcImportResult?: CodexSessionImportResult | null
   showSsoOption?: boolean
   /** Grok email----password login (admin; password never persisted). */
   showEmailPasswordOption?: boolean
@@ -951,6 +1307,13 @@ const props = withDefaults(defineProps<Props>(), {
   showCodexSessionImportOption: false,
   showAgentIdentityOption: false,
   showCodexPatOption: false,
+  showSiwcOption: false,
+  showSiwcJsonOption: false,
+  siwcAuthUrl: '',
+  siwcState: '',
+  siwcRemainingSeconds: 0,
+  siwcPhase: 'idle',
+  siwcImportResult: null,
   showSsoOption: false,
   showEmailPasswordOption: false,
   showManualOption: true,
@@ -970,6 +1333,9 @@ const emit = defineEmits<{
   'import-access-token': [accessToken: string]
   'import-codex-session': [content: string]
   'import-codex-pat': [accessToken: string]
+  'generate-siwc-url': [agentName: string]
+  'create-siwc-account': [payload: { callbackUrl: string; managementAccountId: number | null }]
+  'import-siwc-json': [content: string]
   'import-sso': [content: string]
   'authorize-password': [emailPasswordInput: string]
   'update:inputMethod': [method: AuthInputMethod]
@@ -1013,6 +1379,22 @@ const oauthImportantNotice = computed(() => {
 
 // Local state
 const inputMethod = ref<AuthInputMethod>(props.initialInputMethod)
+
+// OpenAI 授权体系：Codex（chatgpt.com）与 SIWC（api.openai.com）分两个 tab。
+// 体系由当前 inputMethod 推导，保持单一状态源。
+type OpenAIAuthFamily = 'codex' | 'siwc'
+const authFamilyTabsEnabled = computed(() => props.showSiwcOption || props.showSiwcJsonOption)
+const authFamily = computed<OpenAIAuthFamily>(() =>
+  inputMethod.value === 'siwc' || inputMethod.value === 'siwc_json' ? 'siwc' : 'codex'
+)
+const switchAuthFamily = (family: OpenAIAuthFamily) => {
+  if (family === authFamily.value) return
+  if (family === 'siwc') {
+    inputMethod.value = props.showSiwcOption ? 'siwc' : 'siwc_json'
+    return
+  }
+  inputMethod.value = props.showManualOption ? 'manual' : 'refresh_token'
+}
 const isAgentIdentityInput = computed(() => inputMethod.value === 'agent_identity')
 const authCodeInput = ref('')
 const sessionKeyInput = ref('')
@@ -1020,6 +1402,14 @@ const refreshTokenInput = ref('')
 const sessionTokenInput = ref('')
 const codexSessionInput = ref('')
 const codexPATInput = ref('')
+// SIWC
+const siwcAgentName = ref('')
+const siwcCallbackInput = ref('')
+const siwcManagementAccountId = ref<number | null>(null)
+const siwcManagementOptions = ref<{ id: number; name: string; email: string }[]>([])
+const siwcManagementLoading = ref(false)
+const siwcManagementLoadFailed = ref(false)
+const siwcJsonInput = ref('')
 const ssoCookieInput = ref('')
 const emailPasswordInput = ref(props.initialEmailPassword || '')
 const showHelpDialog = ref(false)
@@ -1056,6 +1446,8 @@ const methodOptionCount = computed(() => [
   props.showCodexSessionImportOption,
   props.showAgentIdentityOption,
   props.showCodexPatOption,
+  props.showSiwcOption,
+  props.showSiwcJsonOption,
   props.showSsoOption,
   emailPasswordOptionEnabled.value
 ].filter(Boolean).length)
@@ -1103,6 +1495,114 @@ const parsedEmailPasswordCount = computed(() => {
     .map((item) => item.trim())
     .filter((item) => item && item.includes('----')).length
 })
+
+// ---------- SIWC ----------
+const siwcHasUrl = computed(() => !!props.siwcAuthUrl)
+
+const siwcCountdownText = computed(() => {
+  const total = Math.max(0, props.siwcRemainingSeconds || 0)
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+})
+
+const siwcCallbackValidation = computed(() => validateSiwcCallback(siwcCallbackInput.value, props.siwcState || ''))
+
+// 输入为空时不显示错误，避免未填就标红
+const siwcCallbackErrorText = computed(() => {
+  const result = siwcCallbackValidation.value
+  if (result.ok || !siwcCallbackInput.value.trim() || !result.reason) return ''
+  if (result.reason === 'upstream_error') {
+    return t('admin.accounts.oauth.openai.siwcCallbackInvalid.upstream_error', { error: result.upstreamError || '' })
+  }
+  return t(`admin.accounts.oauth.openai.siwcCallbackInvalid.${result.reason}`)
+})
+
+const canSubmitSiwc = computed(() =>
+  !props.loading && siwcHasUrl.value && props.siwcPhase !== 'expired' && siwcCallbackValidation.value.ok
+)
+
+const siwcJsonPrecheck = computed(() => precheckSiwcJson(siwcJsonInput.value))
+
+const siwcJsonErrorText = computed(() => {
+  const result = siwcJsonPrecheck.value
+  if (result.ok || !siwcJsonInput.value.trim() || !result.reason) return ''
+  return t(`admin.accounts.oauth.openai.siwcJsonInvalid.${result.reason}`, { index: result.index ?? 0 })
+})
+
+const siwcImportActionClass = (action: CodexSessionImportItem['action']) => {
+  switch (action) {
+    case 'created':
+      return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+    case 'updated':
+      return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+    case 'created_with_error':
+      return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+    case 'failed':
+      return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+    default:
+      return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+  }
+}
+
+/** 加载可作为管理凭据的账号：同平台 type=oauth 且 credentials.auth_mode 为空（即普通 Codex OAuth）。 */
+const loadSiwcManagementOptions = async () => {
+  siwcManagementLoading.value = true
+  siwcManagementLoadFailed.value = false
+  try {
+    const response = await adminAPI.accounts.list(1, 200, { platform: 'openai', type: 'oauth', lite: '1' })
+    siwcManagementOptions.value = (response.items || [])
+      .filter((item) => {
+        const authMode = item.credentials?.auth_mode
+        return !(typeof authMode === 'string' && authMode.trim()) && item.parent_account_id == null
+      })
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        email: String(item.credentials?.email || item.extra?.email || '')
+      }))
+  } catch {
+    siwcManagementLoadFailed.value = true
+    siwcManagementOptions.value = []
+  } finally {
+    siwcManagementLoading.value = false
+  }
+}
+
+watch(
+  () => [inputMethod.value, props.platform] as const,
+  ([method, platform]) => {
+    if (method === 'siwc' && platform === 'openai' && siwcManagementOptions.value.length === 0 && !siwcManagementLoading.value) {
+      loadSiwcManagementOptions()
+    }
+  },
+  { immediate: true }
+)
+
+const handleGenerateSiwcUrl = () => {
+  siwcCallbackInput.value = ''
+  emit('generate-siwc-url', siwcAgentName.value.trim())
+}
+
+const handleCopySiwcUrl = () => {
+  if (props.siwcAuthUrl) {
+    copyToClipboard(props.siwcAuthUrl, 'URL copied to clipboard')
+  }
+}
+
+const handleSubmitSiwc = () => {
+  if (!canSubmitSiwc.value) return
+  emit('create-siwc-account', {
+    callbackUrl: siwcCallbackInput.value.trim(),
+    managementAccountId: siwcManagementAccountId.value
+  })
+}
+
+const handleImportSiwcJson = () => {
+  if (siwcJsonPrecheck.value.ok) {
+    emit('import-siwc-json', siwcJsonInput.value.trim())
+  }
+}
 
 const handleAuthorizePassword = () => {
   if (emailPasswordInput.value.trim()) {
@@ -1223,6 +1723,8 @@ defineExpose({
   sessionToken: sessionTokenInput,
   codexSession: codexSessionInput,
   codexPAT: codexPATInput,
+  siwcCallback: siwcCallbackInput,
+  siwcJson: siwcJsonInput,
   ssoCookie: ssoCookieInput,
   emailPassword: emailPasswordInput,
   inputMethod,
@@ -1235,6 +1737,10 @@ defineExpose({
     sessionTokenInput.value = ''
     codexSessionInput.value = ''
     codexPATInput.value = ''
+    siwcAgentName.value = ''
+    siwcCallbackInput.value = ''
+    siwcManagementAccountId.value = null
+    siwcJsonInput.value = ''
     ssoCookieInput.value = ''
     emailPasswordInput.value = ''
     inputMethod.value = props.initialInputMethod

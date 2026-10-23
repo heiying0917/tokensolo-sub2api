@@ -658,6 +658,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	defer releaseUpstreamCtx()
 
+	if account.IsOpenAISIWC() {
+		return nil, &openAISIWCUnsupportedCapabilityError{Capability: "images"}
+	}
 	token, _, err := s.GetAccessToken(upstreamCtx, account)
 	if err != nil {
 		return nil, err

@@ -42,6 +42,10 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 	if !account.IsOpenAI() {
 		return openAIWSHTTPDecision("platform_not_openai")
 	}
+	if account.IsOpenAISIWC() {
+		// SIWC 上游只走 HTTP SSE；WS 路径会携带 Codex 身份与恢复语义。
+		return openAIWSHTTPDecision("siwc_http_only")
+	}
 	if account.IsOpenAIWSForceHTTPEnabled() {
 		return openAIWSHTTPDecision("account_force_http")
 	}

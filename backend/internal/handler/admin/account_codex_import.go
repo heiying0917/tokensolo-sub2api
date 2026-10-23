@@ -39,6 +39,8 @@ type CodexSessionImportRequest struct {
 	UpdateExisting          *bool          `json:"update_existing"`
 	SkipDefaultGroupBind    *bool          `json:"skip_default_group_bind"`
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"`
+	// VerifySIWCRefresh 导入 SIWC 凭据后是否立即强制刷新一次（默认 true，完成 RT 所有权转移）。
+	VerifySIWCRefresh *bool `json:"verify_siwc_refresh"`
 }
 
 type CodexSessionImportResult struct {
@@ -58,6 +60,8 @@ type CodexSessionImportItem struct {
 	Action    string `json:"action"`
 	AccountID int64  `json:"account_id,omitempty"`
 	Message   string `json:"message,omitempty"`
+	// AuthMode 为 "siwc" 时表示该条是 Sign in with ChatGPT 凭据。
+	AuthMode string `json:"auth_mode,omitempty"`
 }
 
 type CodexSessionImportMessage struct {
@@ -86,6 +90,7 @@ type codexImportAccount struct {
 	AgentTaskID     string
 	AgentFedRAMP    bool
 	IsAgentIdentity bool
+	IsSIWC          bool
 	Credentials     map[string]any
 	Extra           map[string]any
 	TokenExpiresAt  *time.Time
@@ -319,12 +324,21 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 				accountID = updated.ID
 				index.Add(*updated)
 			}
-			result.Items = append(result.Items, CodexSessionImportItem{
+			updatedItem := CodexSessionImportItem{
 				Index:     entry.Index,
 				Name:      accountName,
 				Action:    "updated",
 				AccountID: accountID,
-			})
+			}
+			if item.IsSIWC {
+				updatedItem.AuthMode = service.OpenAIAuthModeSIWC
+				result.Warnings = append(result.Warnings, CodexSessionImportMessage{
+					Index: entry.Index, Name: accountName,
+					Message: "同 client_id 的 SIWC 凭据已存在并被覆盖；JSON 中的 refresh_token 若已被其它实例轮转，强制刷新会失败",
+				})
+				h.verifySIWCImportRefresh(ctx, req, updated, &updatedItem, &result)
+			}
+			result.Items = append(result.Items, updatedItem)
 			continue
 		}
 
@@ -369,15 +383,51 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 		if account != nil {
 			accountID = account.ID
 		}
-		result.Items = append(result.Items, CodexSessionImportItem{
+		createdItem := CodexSessionImportItem{
 			Index:     entry.Index,
 			Name:      accountName,
 			Action:    "created",
 			AccountID: accountID,
-		})
+		}
+		if item.IsSIWC {
+			createdItem.AuthMode = service.OpenAIAuthModeSIWC
+			h.verifySIWCImportRefresh(ctx, req, account, &createdItem, &result)
+		}
+		result.Items = append(result.Items, createdItem)
 	}
 
 	return result, nil
+}
+
+// verifySIWCImportRefresh 导入 SIWC 凭据后立即走带锁的强制刷新：
+// 成功 → refresh_token 所有权转移到本库，JSON 副本作废；
+// 失败 → 账号标 error、item 标 created_with_error，不回滚行（后台可见并可重新授权）。
+func (h *AccountHandler) verifySIWCImportRefresh(ctx context.Context, req CodexSessionImportRequest, account *service.Account, item *CodexSessionImportItem, result *CodexSessionImportResult) {
+	if account == nil || item == nil || result == nil {
+		return
+	}
+	if req.VerifySIWCRefresh != nil && !*req.VerifySIWCRefresh {
+		return
+	}
+	if h.openAITokenProvider == nil {
+		result.Warnings = append(result.Warnings, CodexSessionImportMessage{Index: item.Index, Name: item.Name, Message: "token provider 未配置，跳过导入后刷新验证"})
+		return
+	}
+	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 45*time.Second)
+	defer cancel()
+	if _, err := h.openAITokenProvider.ForceRefresh(refreshCtx, account); err != nil {
+		msg := "导入后刷新失败: " + err.Error()
+		if setErr := h.adminService.SetAccountError(refreshCtx, account.ID, "siwc import refresh failed: "+err.Error()); setErr != nil {
+			msg += "（标记 error 失败: " + setErr.Error() + "）"
+		}
+		item.Action = "created_with_error"
+		item.Message = msg
+		result.Errors = append(result.Errors, CodexSessionImportMessage{Index: item.Index, Name: item.Name, Message: msg})
+		return
+	}
+	if h.tokenCacheInvalidator != nil {
+		_ = h.tokenCacheInvalidator.InvalidateToken(refreshCtx, account)
+	}
 }
 
 func parseCodexSessionImportEntries(req CodexSessionImportRequest) ([]codexImportEntry, error) {
@@ -502,6 +552,10 @@ func normalizeCodexImportEntry(entry codexImportEntry) (*codexImportAccount, err
 	case string:
 		item.AccessToken = strings.TrimSpace(raw)
 	case map[string]any:
+		// SIWC（Sign in with ChatGPT）凭据：client_id 为 oaiapp_* 或 type=chatgpt_siwc，走独立归一化。
+		if siwcRaw, ok := siwcImportPayload(raw); ok {
+			return normalizeSIWCImportEntry(entry, siwcRaw)
+		}
 		if agentIdentity, ok := firstCodexMap(raw, []string{"agent_identity"}, []string{"agentIdentity"}); ok || strings.EqualFold(firstCodexString(raw, []string{"auth_mode"}, []string{"authMode"}), service.OpenAIAuthModeAgentIdentity) {
 			if !ok {
 				agentIdentity = raw
@@ -959,12 +1013,15 @@ func (i *codexAccountIndex) Add(account service.Account) {
 	if i.keysByAccountID == nil {
 		i.keysByAccountID = map[int64]map[string]struct{}{}
 	}
-	keys := buildCodexStoredIdentityKeys(
-		codexCredentialString(account.Credentials, "chatgpt_account_id"),
-		codexCredentialString(account.Credentials, "chatgpt_user_id"),
-		codexCredentialString(account.Credentials, "email"),
-		codexCredentialString(account.Credentials, "access_token"),
-	)
+	keys, isSIWC := siwcStoredIdentityKeys(account)
+	if !isSIWC {
+		keys = buildCodexStoredIdentityKeys(
+			codexCredentialString(account.Credentials, "chatgpt_account_id"),
+			codexCredentialString(account.Credentials, "chatgpt_user_id"),
+			codexCredentialString(account.Credentials, "email"),
+			codexCredentialString(account.Credentials, "access_token"),
+		)
+	}
 	orderedKeys := make([]string, 0, len(keys)+1)
 	accountKeys := make(map[string]struct{}, len(keys)+1)
 	for _, key := range keys {

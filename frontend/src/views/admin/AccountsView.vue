@@ -161,6 +161,20 @@
             </template>
           </AccountTableActions>
         </div>
+        <!-- SIWC 资格闸门汇总：仅列表含 SIWC 账号且存在受限 / 待恢复时显示 -->
+        <div
+          v-if="siwcGateSummary && (siwcGateSummary.blocked > 0 || siwcGateSummary.restorable > 0)"
+          class="mt-2 flex flex-wrap items-center gap-2 text-xs"
+          data-testid="siwc-gate-summary"
+        >
+          <span class="font-medium text-gray-500 dark:text-gray-400">SIWC</span>
+          <span class="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300">
+            {{ t('admin.accounts.siwcGate.summaryBlocked', { count: siwcGateSummary.blocked }) }}
+          </span>
+          <span class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+            {{ t('admin.accounts.siwcGate.summaryRestorable', { count: siwcGateSummary.restorable }) }}
+          </span>
+        </div>
         <div
           v-if="hasPendingListSync"
           class="mt-2 flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-200"
@@ -289,6 +303,7 @@
           <template #cell-status="{ row }">
             <div class="flex items-center gap-1.5">
               <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
+              <SiwcGateBadge :account="row" @show-gate="handleShowSiwcGate" />
             </div>
           </template>
           <template #cell-schedulable="{ row }">
@@ -460,7 +475,7 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" @siwc-gate="handleShowSiwcGate" @siwc-fingerprint="handleSiwcFingerprint" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -475,6 +490,7 @@
       @updated="handleBulkUpdated"
     />
     <TempUnschedStatusModal :show="showTempUnsched" :account="tempUnschedAcc" @close="showTempUnsched = false" @reset="handleTempUnschedReset" />
+    <SiwcGateModal :show="showSiwcGate" :account="siwcGateAcc" @close="showSiwcGate = false" @updated="handleSiwcGateUpdated" @restored="handleSiwcGateRestored" />
     <ConfirmDialog :show="showDeleteDialog" :title="t('admin.accounts.deleteAccount')" :message="t('admin.accounts.deleteConfirm', { name: deletingAcc?.name })" :confirm-text="t('common.delete')" :cancel-text="t('common.cancel')" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
     <ConfirmDialog :show="showCreateShadowDialog" :title="t('admin.accounts.createSparkShadow')" :message="t('admin.accounts.createSparkShadowConfirm', { name: creatingShadowAcc?.name })" @confirm="confirmCreateSparkShadow" @cancel="showCreateShadowDialog = false" />
     <ConfirmDialog :show="showExportDataDialog" :title="t('admin.accounts.dataExport')" :message="t('admin.accounts.dataExportConfirmMessage')" :confirm-text="t('admin.accounts.dataExportConfirm')" :cancel-text="t('common.cancel')" @confirm="handleExportData" @cancel="showExportDataDialog = false">
@@ -508,7 +524,8 @@ import DataTable from '@/components/common/DataTable.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
-import { CreateAccountModal, EditAccountModal, BulkEditAccountModal, SyncFromCrsModal, TempUnschedStatusModal } from '@/components/account'
+import { CreateAccountModal, EditAccountModal, BulkEditAccountModal, SyncFromCrsModal, TempUnschedStatusModal, SiwcGateBadge, SiwcGateModal } from '@/components/account'
+import { isSiwcAccount } from '@/utils/siwcAccount'
 import AccountTableActions from '@/components/admin/account/AccountTableActions.vue'
 import AccountTableFilters from '@/components/admin/account/AccountTableFilters.vue'
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
@@ -534,11 +551,11 @@ import { fetchAllAccountIds } from '@/utils/accountSelection'
 import { buildGrokUsageRefreshKey, buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import { proxyExpiryBadgeClass, proxyExpiryLabelKey } from '@/utils/proxyExpiry'
-import { extractApiErrorMessage } from '@/utils/apiError'
+import { extractApiErrorMessage, extractI18nErrorMessage } from '@/utils/apiError'
 import { sanitizeUrl } from '@/utils/url'
 import { getFloatingPanelPosition } from '@/utils/floatingPanel'
 import { formatMultiplier } from '@/utils/formatters'
-import type { Account, AccountListItem, AccountPlatform, AccountSchedulerGroupScore, AccountType, AccountUsageInfo, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel, UpstreamBillingProbeSnapshot } from '@/types'
+import type { Account, AccountListItem, AccountPlatform, AccountSchedulerGroupScore, AccountType, AccountUsageInfo, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel, UpstreamBillingProbeSnapshot, SiwcFingerprintResult, SiwcGateState, SiwcGateSummary } from '@/types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -611,6 +628,11 @@ const showErrorPassthrough = ref(false)
 const showTLSFingerprintProfiles = ref(false)
 const edAcc = ref<Account | null>(null)
 const tempUnschedAcc = ref<Account | null>(null)
+// SIWC 资格闸门弹窗与页头汇总
+const showSiwcGate = ref(false)
+const siwcGateAcc = ref<Account | null>(null)
+const siwcGateSummary = ref<SiwcGateSummary | null>(null)
+let siwcGateSummaryLoading = false
 const deletingAcc = ref<Account | null>(null)
 const creatingShadowAcc = ref<Account | null>(null)
 const reAuthAcc = ref<Account | null>(null)
@@ -2506,6 +2528,62 @@ const handleToggleSchedulable = async (a: Account) => {
   }
 }
 const handleShowTempUnsched = (a: Account) => { tempUnschedAcc.value = a; showTempUnsched.value = true }
+// ---------- SIWC 资格闸门 ----------
+const hasSiwcAccounts = computed(() => accounts.value.some(account => isSiwcAccount(account)))
+const loadSiwcGateSummary = async () => {
+  if (!hasSiwcAccounts.value) {
+    siwcGateSummary.value = null
+    return
+  }
+  if (siwcGateSummaryLoading) return
+  siwcGateSummaryLoading = true
+  try {
+    siwcGateSummary.value = await adminAPI.accounts.getSiwcGateSummary()
+  } catch (error) {
+    console.error('Failed to load SIWC gate summary:', error)
+  } finally {
+    siwcGateSummaryLoading = false
+  }
+}
+watch(hasSiwcAccounts, (has) => { if (has) loadSiwcGateSummary(); else siwcGateSummary.value = null }, { immediate: true })
+const handleShowSiwcGate = (a: Account) => { siwcGateAcc.value = a; showSiwcGate.value = true }
+const patchSiwcExtra = (accountId: number, gate: SiwcGateState | null, fingerprint: SiwcFingerprintResult | null) => {
+  const account = accounts.value.find(item => item.id === accountId)
+  if (!account) return
+  const extra = { ...(account.extra || {}) } as NonNullable<Account['extra']>
+  if (gate) extra.siwc_gate = gate
+  if (fingerprint) extra.siwc_fingerprint = fingerprint
+  patchAccountInList({ ...account, extra } as Account)
+}
+const handleSiwcGateUpdated = (accountId: number, gate: SiwcGateState | null, fingerprint: SiwcFingerprintResult | null) => {
+  patchSiwcExtra(accountId, gate, fingerprint)
+  enterAutoRefreshSilentWindow()
+  loadSiwcGateSummary()
+}
+const handleSiwcGateRestored = () => {
+  showSiwcGate.value = false
+  siwcGateAcc.value = null
+  reload()
+}
+// 菜单项「指纹验证」：直接跑一次并把结果写回列表
+const handleSiwcFingerprint = async (a: Account) => {
+  try {
+    const result = await adminAPI.accounts.runSiwcFingerprint(a.id)
+    patchSiwcExtra(a.id, null, result)
+    enterAutoRefreshSilentWindow()
+    const verdictKey = result.verdict === 'ok'
+      ? 'admin.accounts.siwcGate.fingerprintOk'
+      : result.verdict === 'suspect'
+        ? 'admin.accounts.siwcGate.fingerprintSuspect'
+        : 'admin.accounts.siwcGate.fingerprintError'
+    const message = `${t('admin.accounts.siwcGate.fingerprintSuccess')} · ${t(verdictKey)}`
+    if (result.verdict === 'ok') appStore.showSuccess(message)
+    else appStore.showWarning(message)
+  } catch (error: unknown) {
+    console.error('Failed to run SIWC fingerprint:', error)
+    appStore.showError(extractI18nErrorMessage(error, t, 'admin.accounts.siwcGate.errors', t('admin.accounts.siwcGate.actionFailed')))
+  }
+}
 const handleTempUnschedReset = async (updated: Account) => {
   showTempUnsched.value = false
   tempUnschedAcc.value = null

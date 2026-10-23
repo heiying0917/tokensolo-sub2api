@@ -13,6 +13,8 @@ export type AuthInputMethod =
   | 'codex_session'
   | 'agent_identity'
   | 'codex_pat'
+  | 'siwc'
+  | 'siwc_json'
   | 'sso_cookie'
   | 'email_password'
 

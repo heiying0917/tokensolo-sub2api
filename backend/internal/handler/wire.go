@@ -51,8 +51,13 @@ func ProvideAdminHandlers(
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 	opencodeGoUsage *service.OpenCodeGoUsageService,
 	claudeResetCredits *service.ClaudeResetCreditService,
+	openAITokenProvider *service.OpenAITokenProvider,
+	siwcGate *service.SIWCGateService,
 ) *AdminHandlers {
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
+	accountHandler.SetOpenAITokenProvider(openAITokenProvider)
+	openaiOAuthHandler.SetOpenAITokenProvider(openAITokenProvider)
+	openaiOAuthHandler.SetSIWCGateService(siwcGate)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
 	accountHandler.SetOpenCodeGoUsageService(opencodeGoUsage)
 	accountHandler.SetClaudeResetCreditService(claudeResetCredits)
