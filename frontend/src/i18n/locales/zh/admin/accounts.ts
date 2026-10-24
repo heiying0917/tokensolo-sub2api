@@ -488,6 +488,7 @@ export default {
         addTitle: '添加 Agent',
         addSubmit: '提交并添加',
         addSuccess: 'Agent 已添加',
+        submitting: '提交中，正在向 OpenAI 换取凭据…',
         sameEmailHint: '必须用 {email} 登录授权；新 Agent 继承当前账号的分组、代理、优先级与模型白名单。',
         deleteTitle: '删除 Agent',
         deleteMessage: '确定删除 Agent「{name}」？删除后该凭据不可恢复，需重新授权。',

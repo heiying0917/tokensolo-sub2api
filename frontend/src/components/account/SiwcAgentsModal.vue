@@ -112,6 +112,10 @@
               :placeholder="t('admin.accounts.oauth.openai.siwcAgentNamePlaceholder')"
             />
             <button type="button" class="btn btn-primary btn-sm" :disabled="siwc.loading.value" data-testid="siwc-agents-generate" @click="generate">
+              <svg v-if="siwc.loading.value" class="-ml-1 mr-2 inline h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" data-testid="siwc-agents-generate-spinner">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+              </svg>
               {{ siwc.isExpired.value ? t('admin.accounts.oauth.openai.siwcRegenerate') : t('admin.accounts.oauth.openai.siwcGenerateUrl') }}
             </button>
           </div>
@@ -151,7 +155,13 @@
               data-testid="siwc-agents-submit"
               @click="submitAuth"
             >
-              {{ authMode === 'add' ? t('admin.accounts.siwcAgents.addSubmit') : t('admin.accounts.siwcAgents.reauthSubmit') }}
+              <svg v-if="siwc.loading.value" class="-ml-1 mr-2 inline h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" data-testid="siwc-agents-submit-spinner">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+              </svg>
+              {{ siwc.loading.value
+                ? t('admin.accounts.siwcAgents.submitting')
+                : authMode === 'add' ? t('admin.accounts.siwcAgents.addSubmit') : t('admin.accounts.siwcAgents.reauthSubmit') }}
             </button>
           </div>
         </div>

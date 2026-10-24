@@ -440,6 +440,7 @@ export default {
         addTitle: 'Add agent',
         addSubmit: 'Submit and add',
         addSuccess: 'Agent added',
+        submitting: 'Submitting, exchanging credential with OpenAI…',
         sameEmailHint: 'Sign in with {email}. The new agent inherits groups, proxy, priority and model whitelist from this account.',
         deleteTitle: 'Delete agent',
         deleteMessage: 'Delete agent "{name}"? The credential cannot be recovered and must be re-authorized.',

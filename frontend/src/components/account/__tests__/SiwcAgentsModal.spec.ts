@@ -116,6 +116,25 @@ describe('SiwcAgentsModal', () => {
     expect(mocks.getSiwcAgents).toHaveBeenCalledTimes(2)
   })
 
+  it('shows a spinner on the submit button while the exchange is in flight', async () => {
+    let resolveCreate: (value: unknown) => void = () => {}
+    mocks.createOpenAISiwc.mockReturnValue(new Promise((resolve) => { resolveCreate = resolve }))
+    const w = mountModal()
+    await flushPromises()
+    await w.get('[data-testid="siwc-agents-add"]').trigger('click')
+    await w.get('[data-testid="siwc-agents-generate"]').trigger('click')
+    await flushPromises()
+    await w.get('[data-testid="siwc-agents-callback"]').setValue(CALLBACK)
+    expect(w.find('[data-testid="siwc-agents-submit-spinner"]').exists()).toBe(false)
+    await w.get('[data-testid="siwc-agents-submit"]').trigger('click')
+    await w.vm.$nextTick()
+    expect(w.find('[data-testid="siwc-agents-submit-spinner"]').exists()).toBe(true)
+    expect(w.get('[data-testid="siwc-agents-submit"]').text()).toContain('admin.accounts.siwcAgents.submitting')
+    expect(w.get('[data-testid="siwc-agents-submit"]').attributes('disabled')).toBeDefined()
+    resolveCreate({ id: 9 })
+    await flushPromises()
+  })
+
   it('opens directly in re-auth mode for the given agent and replaces its credential', async () => {
     mocks.reauthSiwcFromOAuth.mockResolvedValue({ id: 7 })
     const w = mountModal({ reauthAccountId: 7 })

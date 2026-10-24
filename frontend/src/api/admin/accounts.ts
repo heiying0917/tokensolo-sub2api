@@ -787,6 +787,8 @@ export async function createOpenAICodexPAT(payload: OpenAICodexPATCreateRequest)
 // ==================== OpenAI SIWC (Sign in with ChatGPT) ====================
 
 const SIWC_LONG_TIMEOUT = 120000 // 指纹 / 恢复会实际打上游，后端最长 120s
+// 换码 / 建号：后端 token 端点超时 30s，前端须更长，否则先于后端超时、看不到真实错误
+const SIWC_EXCHANGE_TIMEOUT = 60000
 
 /** 生成 SIWC 授权链接（两步式第一步）。 */
 export async function generateSiwcAuthUrl(payload: OpenAISiwcAuthUrlRequest = {}): Promise<OpenAISiwcAuthUrlResponse> {
@@ -802,7 +804,9 @@ export async function exchangeSiwcCode(payload: OpenAISiwcExchangeRequest): Prom
 
 /** 回调 URL 一步建号。 */
 export async function createOpenAISiwc(payload: OpenAISiwcCreateRequest): Promise<Account> {
-  const { data } = await apiClient.post<Account>('/admin/openai/siwc/create-from-oauth', payload)
+  const { data } = await apiClient.post<Account>('/admin/openai/siwc/create-from-oauth', payload, {
+    timeout: SIWC_EXCHANGE_TIMEOUT
+  })
   return data
 }
 
@@ -848,7 +852,9 @@ export async function activateSiwcAgent(id: number): Promise<SiwcAgentGroup> {
 
 /** 用新的 SIWC 授权替换单个 Agent 的凭据（必须登录同一 ChatGPT 账号）。 */
 export async function reauthSiwcFromOAuth(id: number, payload: OpenAISiwcExchangeRequest): Promise<Account> {
-  const { data } = await apiClient.post<Account>(`/admin/openai/siwc/accounts/${id}/reauth-from-oauth`, payload)
+  const { data } = await apiClient.post<Account>(`/admin/openai/siwc/accounts/${id}/reauth-from-oauth`, payload, {
+    timeout: SIWC_EXCHANGE_TIMEOUT
+  })
   return data
 }
 
