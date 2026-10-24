@@ -234,6 +234,18 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 		_, directMetadata, parseErr := extractUpstreamModelCatalog(body, account != nil && account.IsGrok())
 		if parseErr == nil {
 			catalog.Metadata = directMetadata
+			if account != nil && account.IsOpenAISIWC() {
+				// 已被过滤的模型不保留能力元数据
+				kept := make(map[string]struct{}, len(models))
+				for _, id := range models {
+					kept[id] = struct{}{}
+				}
+				for id := range catalog.Metadata {
+					if _, ok := kept[id]; !ok {
+						delete(catalog.Metadata, id)
+					}
+				}
+			}
 		}
 	}
 
@@ -772,6 +784,9 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 	if err != nil {
 		return nil, nil, newUpstreamModelSyncUpstreamError("Upstream model list response was not valid JSON", err)
 	}
+	if account.IsOpenAISIWC() {
+		models = filterOpenAISIWCUpstreamModels(models)
+	}
 	if len(models) == 0 {
 		return nil, nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
 	}
@@ -1163,6 +1178,15 @@ func (s *AccountTestService) buildOpenAIOAuthUpstreamModelsRequest(ctx context.C
 	credentialAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
 	if err != nil {
 		return nil, newUpstreamModelSyncConfigError("Failed to resolve OpenAI account credentials", err)
+	}
+	// SIWC 令牌对 /v1/models 返回空、打 chatgpt.com 会 401（同 tokensolo-cpa model_sync）：
+	// 借同邮箱 Codex 管理凭据拉 codex/models，结果再按 SIWC 不支持的模型过滤。
+	if credentialAccount.IsOpenAISIWC() {
+		mgmt, mgmtErr := resolveOpenAISIWCManagementAccount(ctx, s.accountRepo, credentialAccount)
+		if mgmtErr != nil {
+			return nil, newUpstreamModelSyncConfigError("SIWC account has no Codex management credential with the same email; import its Codex OAuth account first", mgmtErr)
+		}
+		credentialAccount = mgmt
 	}
 	if !credentialAccount.IsOpenAIOAuth() {
 		return nil, newUpstreamModelSyncUnsupportedError(

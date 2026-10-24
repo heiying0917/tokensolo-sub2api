@@ -146,6 +146,19 @@ func isOpenAISIWCServableModel(requestedModel string) bool {
 	return false
 }
 
+// filterOpenAISIWCUpstreamModels 过滤管理凭据 codex/models 清单里 SIWC 上游明确拒绝的模型。
+// 清单与 SIWC 实测基本一致，只有 gpt-5.5 家族在 Codex 侧可见、SIWC 侧被拒（cpa 用全局规则排除同一批）。
+func filterOpenAISIWCUpstreamModels(models []string) []string {
+	out := make([]string, 0, len(models))
+	for _, model := range models {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-5.5") {
+			continue
+		}
+		out = append(out, model)
+	}
+	return out
+}
+
 // isOpenAISIWCManagementCandidate 判断账号能否充当 SIWC 的管理凭据：
 // 同平台 OAuth、非 SIWC、非影子、未删除且状态 active（可以不参与调度）。
 func isOpenAISIWCManagementCandidate(candidate *Account) bool {
