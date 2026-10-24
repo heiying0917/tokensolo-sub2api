@@ -1,0 +1,16 @@
+# sub2api 独立部署用的命名空间（与 tokensolo 主平台共用 tokensolo，不另起 namespace）
+#
+# 用途：在空集群或新集群里单独拉起 sub2api 时先 apply 本文件；集群里已有 tokensolo 命名空间时 apply 是幂等的。
+#   kubectl apply -f deploy/k8s/namespace.yaml
+#
+# 与 tokensolo 仓库 docs/deploy/k8s/manifests/namespace.yaml 保持逐字一致（无 labels / annotations），
+# 两个仓库谁后 apply 都不会互相覆盖元数据；若要给命名空间加标签，两边必须同步修改。
+#
+# ⚠ 故意放在 deploy/k8s/ 而不是 deploy/k8s/prod/：
+#   该命名空间里还跑着 tokensolo 主站、crs、cpa 等全部服务，
+#   绝不能被 `kubectl delete -f deploy/k8s/prod/` 之类的目录级操作连带删除。
+#   永远不要对本文件执行 kubectl delete。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tokensolo

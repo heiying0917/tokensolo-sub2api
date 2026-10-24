@@ -76,6 +76,15 @@ export KUBECONFIG=~/.kube/tokensolo.config
 # 在 tokensolo-sub2api 仓库根目录执行
 M=deploy/k8s/prod
 
+# ⓪ 命名空间与镜像拉取密钥（独立部署 / 新集群；现有集群里两者都已存在，可跳过）
+#    命名空间沿用 tokensolo（与主平台共用），文件放在 deploy/k8s/ 而非 prod/，避免目录级 delete 连带删掉整个 namespace
+kubectl apply -f deploy/k8s/namespace.yaml
+#    ghcr-secret-heiying0917：GHCR 私有包拉取凭据（与 cpa 共用，namespace 级）。已存在则不要重建：
+kubectl get secret -n tokensolo ghcr-secret-heiying0917 >/dev/null 2>&1 || \
+  kubectl create secret docker-registry ghcr-secret-heiying0917 -n tokensolo \
+    --docker-server=ghcr.io --docker-username=heiying0917 \
+    --docker-password="$(gh auth token)"   # token 需含 read:packages；失效时 delete 后按此重建
+
 # ① 首发：AUTO_SETUP 建表 / 迁移 / 建管理员
 # 显式列文件：ingress.yaml 要等第 ③ 步 DNS 生效后再 apply，否则 cert-manager 会提前签证书失败
 # secret.yaml 是 git-ignored 的本机文件，须先按第 2 节创建
@@ -122,6 +131,7 @@ kubectl scale deploy/sub2api -n tokensolo --replicas=N    # 扩缩容（改完�
 - 上游优雅停机硬编码 5s（`backend/cmd/server/main.go`），滚动更新时超过 5s 的在途流式请求会被切断（3 副本 + maxSurge=1 逐个滚动，影响面为 1/3）。
 - 多实例安全性（已核实）：迁移 PG advisory lock；OAuth token 刷新走 `OAuthRefreshAPI` Redis 分布式锁 `oauth:refresh_lock:*`；重型后台任务（聚合/清理/备份/告警/订阅到期等）用 Redis leader lock 单飞；并发计数、会话限制、调度缓存在 Redis；设置变更经 outbox 跨实例失效。未加锁的轻量定时任务（账号/代理到期标记、幂等键清理等）是幂等的，多跑无害。
 - `kubectl apply -f deploy/k8s/prod/` 会把镜像重置为 `deployment.yaml` 里的初始 tag，并连带覆盖 Ingress；日常只用 `kubectl set image`（`/tke-release` 已封装），切 ConfigMap 时只 apply `configmap.yaml`。
+- **永远不要 `kubectl delete -f deploy/k8s/namespace.yaml`**：命名空间 tokensolo 里还有主站、crs、cpa 等全部服务，删除即全站下线。
 - Ingress（`ingress.yaml`）是独立对象 `sub2api-ingress` + 独立证书 `sub2api-tls`。tokensolo 仓库的 `ingress-all.yaml` 已不含它，
   对那个共用文件**不要**用 `kubectl apply --prune`，否则会把 sub2api-ingress 当作多余对象删除导致断流。
 
