@@ -52,7 +52,7 @@ sub2api 是 tokensolo 的 **GPT 号池上游**（地位等同 tokensolo-crs）�
 
 - 平时对线上 TKE 集群是**只读**约束。**本 skill 是用户主动发版，流程内的 `kubectl set image / rollout / undo` 等集群写操作在此次发版中被授权**——仅限本发版流程，不扩展到其他场景。
 - **不自动 `git commit`**：预检若发现未提交改动，用 `AskUserQuestion` 询问用户是否提交及 commit message，得到确认后再 commit；tag / push / 部署属发版核心，用户调用即视为授权，自动执行。
-- **manifests 在本仓库**：K8s 清单在 `deploy/k8s/prod/`（2026-10-24 从 tokensolo 仓库迁入，单独维护；Ingress 仍在 `../tokensolo/docs/deploy/k8s/manifests/prod/ingress/`）。日常发版只 `kubectl set image`，**不要** `kubectl apply -f` 该目录（会把镜像重置为清单里的初始 tag）。
+- **manifests 在本仓库**：K8s 清单在 `deploy/k8s/prod/`（2026-10-24 从 tokensolo 仓库迁入，单独维护，含 Ingress `ingress.yaml`）。日常发版只 `kubectl set image`，**不要** `kubectl apply -f` 该目录（会把镜像重置为清单里的初始 tag）。
 
 ## 🚨 致命红线（高于所有 Phase）
 

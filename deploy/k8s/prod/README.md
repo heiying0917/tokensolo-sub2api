@@ -12,7 +12,7 @@ sub2api 作为 tokensolo 的 **GPT 号池上游渠道**，地位等同 tokensolo
 | 拉取密钥 | `ghcr-secret-heiying0917`（与 cpa 共用，见第 7 节） |
 | Deployment / Service / 容器名 | `sub2api` × 3，Pod label `app=sub2api`，端口 8080 |
 | 健康端点 | `GET /health` → `{"status":"ok"}`（纯进程存活，不查 DB） |
-| 对外域名 | `https://sub2api.tokensolo.com`（Ingress 是所有服务共用的，仍在 tokensolo 仓库 `docs/deploy/k8s/manifests/prod/ingress/ingress-all.yaml`） |
+| 对外域名 | `https://sub2api.tokensolo.com`（Ingress 在本目录 `ingress.yaml`，2026-10-24 从 tokensolo 仓库共用的 `ingress-all.yaml` 迁入） |
 | 集群内地址（tokensolo 渠道推荐） | `http://sub2api.tokensolo.svc.cluster.local:8080` |
 | 数据层 | PG：TencentDB `172.16.1.76` 独立 database `sub2api`；Redis：TencentDB `172.16.1.111` **DB=2** |
 
@@ -73,12 +73,13 @@ stringData:
 
 ```bash
 export KUBECONFIG=~/.kube/tokensolo.config
-# 在 tokensolo-sub2api 仓库根目录执行；Ingress 在 tokensolo 仓库（同级目录 ../tokensolo）
+# 在 tokensolo-sub2api 仓库根目录执行
 M=deploy/k8s/prod
-INGRESS=../tokensolo/docs/deploy/k8s/manifests/prod/ingress/ingress-all.yaml
 
 # ① 首发：AUTO_SETUP 建表 / 迁移 / 建管理员
-kubectl apply -f $M/   # secret.yaml 是 git-ignored 的本机文件，须先按第 2 节创建
+# 显式列文件：ingress.yaml 要等第 ③ 步 DNS 生效后再 apply，否则 cert-manager 会提前签证书失败
+# secret.yaml 是 git-ignored 的本机文件，须先按第 2 节创建
+kubectl apply -f $M/secret.yaml -f $M/configmap.yaml -f $M/service.yaml -f $M/deployment.yaml -f $M/gate.yaml
 kubectl rollout status deploy/sub2api -n tokensolo --timeout=300s
 kubectl logs -n tokensolo deploy/sub2api | grep -E "Auto setup completed|Admin user|Server started"
 kubectl exec -n tokensolo deploy/sub2api -- wget -qO- http://127.0.0.1:8080/health   # 镜像只有 wget 没有 curl
@@ -91,7 +92,7 @@ kubectl rollout status deploy/sub2api -n tokensolo --timeout=300s
 
 # ③ 域名：DNS 加 CNAME  sub2api.tokensolo.com → lb-5j4mtrgo-ufy36l5ktjhxgaqo.clb.jp-tencentclb.com
 #    生效后 apply ingress，cert-manager HTTP-01 自动签发
-kubectl apply -f $INGRESS
+kubectl apply -f $M/ingress.yaml
 kubectl get certificate -n tokensolo sub2api-tls      # READY=True 后即可 https 访问
 curl -fsS https://sub2api.tokensolo.com/health
 ```
@@ -120,7 +121,9 @@ kubectl scale deploy/sub2api -n tokensolo --replicas=N    # 扩缩容（改完�
 
 - 上游优雅停机硬编码 5s（`backend/cmd/server/main.go`），滚动更新时超过 5s 的在途流式请求会被切断（3 副本 + maxSurge=1 逐个滚动，影响面为 1/3）。
 - 多实例安全性（已核实）：迁移 PG advisory lock；OAuth token 刷新走 `OAuthRefreshAPI` Redis 分布式锁 `oauth:refresh_lock:*`；重型后台任务（聚合/清理/备份/告警/订阅到期等）用 Redis leader lock 单飞；并发计数、会话限制、调度缓存在 Redis；设置变更经 outbox 跨实例失效。未加锁的轻量定时任务（账号/代理到期标记、幂等键清理等）是幂等的，多跑无害。
-- `kubectl apply -f deploy/k8s/prod/` 会把镜像重置为 `deployment.yaml` 里的初始 tag；日常只用 `kubectl set image`（`/tke-release` 已封装），切 ConfigMap 时只 apply `configmap.yaml`。
+- `kubectl apply -f deploy/k8s/prod/` 会把镜像重置为 `deployment.yaml` 里的初始 tag，并连带覆盖 Ingress；日常只用 `kubectl set image`（`/tke-release` 已封装），切 ConfigMap 时只 apply `configmap.yaml`。
+- Ingress（`ingress.yaml`）是独立对象 `sub2api-ingress` + 独立证书 `sub2api-tls`。tokensolo 仓库的 `ingress-all.yaml` 已不含它，
+  对那个共用文件**不要**用 `kubectl apply --prune`，否则会把 sub2api-ingress 当作多余对象删除导致断流。
 
 ## 7. 切换到新 fork 镜像（2026-10-23，一次性）
 

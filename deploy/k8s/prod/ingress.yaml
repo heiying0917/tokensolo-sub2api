@@ -1,0 +1,51 @@
+# sub2api.tokensolo.com → sub2api（GPT 号池上游后台 / API，独立 Ingress + 独立证书）
+# 2026-10-24 从 tokensolo 仓库 docs/deploy/k8s/manifests/prod/ingress/ingress-all.yaml 迁入，内容未改。
+# 独立 Ingress 的理由：cert-manager 多域名证书全有或全无，该域名 HTTP-01 失败不能连带阻塞其他站点。
+# apply 前置条件：DNS 已加 CNAME sub2api.tokensolo.com → CLB 主机名（见 README.md 第 3 步）。
+# 单独应用：kubectl apply -f deploy/k8s/prod/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sub2api-ingress
+  namespace: tokensolo
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "1800"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "1800"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # 关闭响应缓冲，LLM stream token 实时透传给客户端
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # 关闭请求体缓冲，大文件/流式请求体直通后端，不在 nginx 内存中积累
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    # WebSocket/SSE 支持 + 安全响应头 + 隐藏服务标识
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    # 允许透传含下划线的请求头（如 session_id），默认 off 会静默丢弃
+    nginx.ingress.kubernetes.io/server-snippet: |
+      underscores_in_headers on;
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+      add_header X-Frame-Options "DENY" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header Referrer-Policy "no-referrer-when-downgrade" always;
+      add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+      proxy_hide_header Server;
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - sub2api.tokensolo.com
+    secretName: sub2api-tls
+  rules:
+  - host: sub2api.tokensolo.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: sub2api
+            port:
+              number: 8080
