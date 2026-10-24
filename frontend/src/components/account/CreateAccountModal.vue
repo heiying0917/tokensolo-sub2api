@@ -455,6 +455,51 @@
         </div>
       </div>
 
+      <!-- OpenAI 授权方式（仅 OAuth）：Codex 与 SIWC 在第一步选定，第二步只展示所选体系 -->
+      <div
+        v-if="form.platform === 'openai' && accountCategory === 'oauth-based'"
+        data-testid="openai-auth-family"
+      >
+        <label class="input-label">{{ t('admin.accounts.oauth.openai.authFamilyLabel') }}</label>
+        <div class="mt-2 grid grid-cols-2 gap-3">
+          <button
+            v-for="family in openaiAuthFamilyOptions"
+            :key="family.value"
+            type="button"
+            :data-testid="`openai-auth-family-${family.value}`"
+            @click="openaiAuthFamily = family.value"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              openaiAuthFamily === family.value
+                ? 'border-green-500 bg-green-50 dark:bg-green-900/20'
+                : 'border-gray-200 hover:border-green-300 dark:border-dark-600 dark:hover:border-green-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                openaiAuthFamily === family.value
+                  ? 'bg-green-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon :name="family.icon" size="sm" />
+            </div>
+            <div class="min-w-0">
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ family.title }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ family.desc }}</span>
+              <div class="mt-2 flex flex-wrap gap-1">
+                <span
+                  class="rounded bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-600 dark:bg-dark-600 dark:text-gray-300"
+                >
+                  {{ family.host }}
+                </span>
+              </div>
+            </div>
+          </button>
+        </div>
+      </div>
+
       <!-- Account Type Selection (Grok) -->
       <div v-if="form.platform === 'grok'">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
@@ -3287,7 +3332,7 @@
 
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
       <div
-        v-if="form.platform === 'openai'"
+        v-if="form.platform === 'openai' && !isOpenAISiwcFamily"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -3348,7 +3393,7 @@
 
       <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
       <div
-        v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
+        v-if="form.platform === 'openai' && !isOpenAISiwcFamily && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
         data-testid="create-openai-ws-mode"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
@@ -3470,7 +3515,7 @@
       </div>
 
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'oauth-based'"
+        v-if="form.platform === 'openai' && accountCategory === 'oauth-based' && !isOpenAISiwcFamily"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -3526,7 +3571,7 @@
 
       <!-- Codex 指纹收敛模式（仅 OpenAI OAuth） -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'oauth-based'"
+        v-if="form.platform === 'openai' && accountCategory === 'oauth-based' && !isOpenAISiwcFamily"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
@@ -3544,7 +3589,7 @@
 
       <!-- OpenAI Compact 能力配置 -->
       <div
-        v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
+        v-if="form.platform === 'openai' && !isOpenAISiwcFamily && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="flex items-center justify-between">
@@ -3773,15 +3818,15 @@
         :show-proxy-warning="form.platform !== 'openai' && form.platform !== 'grok' && !!form.proxy_id"
         :allow-multiple="form.platform === 'anthropic'"
         :show-cookie-option="form.platform === 'anthropic'"
-        :show-refresh-token-option="form.platform === 'openai' || form.platform === 'antigravity' || form.platform === 'grok'"
-        :show-mobile-refresh-token-option="form.platform === 'openai'"
+        :show-refresh-token-option="isOpenAICodexFamily || form.platform === 'antigravity' || form.platform === 'grok'"
+        :show-mobile-refresh-token-option="isOpenAICodexFamily"
         :show-session-token-option="false"
         :show-access-token-option="false"
-        :show-codex-session-import-option="form.platform === 'openai'"
-        :show-agent-identity-option="form.platform === 'openai'"
-        :show-codex-pat-option="form.platform === 'openai'"
-        :show-siwc-option="form.platform === 'openai'"
-        :show-siwc-json-option="form.platform === 'openai'"
+        :show-codex-session-import-option="isOpenAICodexFamily"
+        :show-agent-identity-option="isOpenAICodexFamily"
+        :show-codex-pat-option="isOpenAICodexFamily"
+        :show-siwc-option="isOpenAISiwcFamily"
+        :show-siwc-json-option="isOpenAISiwcFamily"
         :siwc-auth-url="siwcAuthUrl"
         :siwc-state="siwcState"
         :siwc-remaining-seconds="siwcRemainingSeconds"
@@ -3789,8 +3834,8 @@
         :siwc-import-result="siwcImportResult"
         :show-sso-option="form.platform === 'grok'"
         :show-email-password-option="false"
-        :show-manual-option="true"
-        :initial-input-method="'manual'"
+        :show-manual-option="!isOpenAISiwcFamily"
+        :initial-input-method="isOpenAISiwcFamily ? 'siwc' : 'manual'"
         :platform="form.platform"
         :show-project-id="geminiOAuthType === 'code_assist'"
         @generate-url="handleGenerateUrl"
@@ -4811,6 +4856,28 @@ const getOpenAICompactModelMappingKey = createStableObjectKeyResolver<ModelMappi
 const getAntigravityModelMappingKey = createStableObjectKeyResolver<ModelMapping>('create-antigravity-model-mapping')
 const getTempUnschedRuleKey = createStableObjectKeyResolver<TempUnschedRuleForm>('create-temp-unsched-rule')
 const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('google_one')
+// OpenAI OAuth 授权体系：codex 走 chatgpt.com，siwc 走 api.openai.com；第一步选定
+const openaiAuthFamily = ref<'codex' | 'siwc'>('codex')
+const isOpenAISiwcFamily = computed(
+  () => form.platform === 'openai' && accountCategory.value === 'oauth-based' && openaiAuthFamily.value === 'siwc'
+)
+const isOpenAICodexFamily = computed(() => form.platform === 'openai' && !isOpenAISiwcFamily.value)
+const openaiAuthFamilyOptions = computed(() => [
+  {
+    value: 'codex' as const,
+    icon: 'key' as const,
+    title: t('admin.accounts.oauth.openai.familyCodex'),
+    desc: t('admin.accounts.oauth.openai.familyCodexShort'),
+    host: 'chatgpt.com'
+  },
+  {
+    value: 'siwc' as const,
+    icon: 'shield' as const,
+    title: t('admin.accounts.oauth.openai.familySiwc'),
+    desc: t('admin.accounts.oauth.openai.familySiwcShort'),
+    host: 'api.openai.com'
+  }
+])
 const geminiAIStudioOAuthEnabled = ref(false)
 const openAICompactModeOptions = computed(() => [
   { value: 'auto', label: t('admin.accounts.openai.compactModeAuto') },
@@ -5739,6 +5806,7 @@ const resetForm = () => {
   tempUnschedEnabled.value = false
   tempUnschedRules.value = []
   geminiOAuthType.value = 'code_assist'
+  openaiAuthFamily.value = 'codex'
   geminiTierGoogleOne.value = 'google_one_free'
   geminiTierGcp.value = 'gcp_standard'
   geminiTierAIStudio.value = 'aistudio_free'
@@ -5832,6 +5900,21 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     extra.images_url_to_b64_json = true
   } else {
     delete extra.images_url_to_b64_json
+  }
+
+  if (isOpenAISiwcFamily.value) {
+    for (const key of [
+      'openai_oauth_responses_websockets_v2_mode',
+      'openai_oauth_responses_websockets_v2_enabled',
+      'openai_passthrough',
+      'openai_oauth_passthrough',
+      'codex_cli_only',
+      'codex_cli_only_allow_app_server',
+      'codex_fingerprint_mode',
+      'openai_compact_mode'
+    ]) {
+      delete extra[key]
+    }
   }
 
   return Object.keys(extra).length > 0 ? extra : undefined
@@ -6749,7 +6832,7 @@ const buildOpenAICodexImportCredentialExtras = (): Record<string, unknown> | nul
   }
 
   const compactModelMapping = buildOpenAICompactModelMapping()
-  if (compactModelMapping) {
+  if (compactModelMapping && !isOpenAISiwcFamily.value) {
     credentials.compact_model_mapping = compactModelMapping
   }
 

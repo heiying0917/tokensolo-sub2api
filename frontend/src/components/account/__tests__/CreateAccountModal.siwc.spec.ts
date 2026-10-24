@@ -8,9 +8,27 @@ const source = readFileSync(
 )
 
 describe('CreateAccountModal SIWC wiring', () => {
-  it('enables the SIWC and SIWC JSON options for the OpenAI platform only', () => {
-    expect(source).toContain(':show-siwc-option="form.platform === \'openai\'"')
-    expect(source).toContain(':show-siwc-json-option="form.platform === \'openai\'"')
+  it('hides Codex-only toggles and strips their extra keys for SIWC', () => {
+    expect(source).toContain('data-testid="create-openai-ws-mode"')
+    expect(source).toMatch(/!isOpenAISiwcFamily && \(accountCategory === 'oauth-based' \|\| accountCategory === 'apikey'\)"\s+data-testid="create-openai-ws-mode"/)
+    const builder = source.slice(source.indexOf('const buildOpenAIExtra ='), source.indexOf('const buildOpenAICodexImportExtra ='))
+    expect(builder).toContain('if (isOpenAISiwcFamily.value)')
+    for (const key of ['openai_passthrough', 'codex_cli_only', 'codex_fingerprint_mode', 'openai_compact_mode']) {
+      expect(builder).toContain(`'${key}'`)
+    }
+  })
+
+
+  it('picks the Codex / SIWC family in step 1 and passes only that family to step 2', () => {
+    expect(source).toContain('data-testid="openai-auth-family"')
+    expect(source).toContain("openaiAuthFamily.value === 'siwc'")
+    expect(source).toContain(':show-siwc-option="isOpenAISiwcFamily"')
+    expect(source).toContain(':show-siwc-json-option="isOpenAISiwcFamily"')
+    expect(source).toContain(':show-codex-pat-option="isOpenAICodexFamily"')
+    expect(source).toContain(':show-manual-option="!isOpenAISiwcFamily"')
+    expect(source).toContain(":initial-input-method=\"isOpenAISiwcFamily ? 'siwc' : 'manual'\"")
+    // 重置时回到 Codex
+    expect(source).toContain("openaiAuthFamily.value = 'codex'")
     expect(source).toContain(':siwc-auth-url="siwcAuthUrl"')
     expect(source).toContain(':siwc-state="siwcState"')
     expect(source).toContain(':siwc-remaining-seconds="siwcRemainingSeconds"')

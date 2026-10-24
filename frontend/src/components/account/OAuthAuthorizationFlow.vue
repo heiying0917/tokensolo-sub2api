@@ -46,7 +46,7 @@
           <label class="mb-2 block text-sm font-medium text-blue-800 dark:text-blue-300">
             {{ methodLabel }}
           </label>
-          <div v-if="!authFamilyTabsEnabled || authFamily === 'codex'" class="flex flex-wrap gap-4">
+          <div v-if="authFamily === 'codex'" class="flex flex-wrap gap-4">
             <label v-if="showManualOption" class="flex cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
@@ -1383,7 +1383,14 @@ const inputMethod = ref<AuthInputMethod>(props.initialInputMethod)
 // OpenAI 授权体系：Codex（chatgpt.com）与 SIWC（api.openai.com）分两个 tab。
 // 体系由当前 inputMethod 推导，保持单一状态源。
 type OpenAIAuthFamily = 'codex' | 'siwc'
-const authFamilyTabsEnabled = computed(() => props.showSiwcOption || props.showSiwcJsonOption)
+// 两个体系的选项同时存在才显示 tab；创建弹窗已在第一步选定体系，只传单一体系
+const hasCodexFamilyOptions = computed(() =>
+  props.showManualOption || props.showRefreshTokenOption || props.showMobileRefreshTokenOption ||
+  props.showCodexSessionImportOption || props.showAgentIdentityOption || props.showCodexPatOption
+)
+const authFamilyTabsEnabled = computed(() =>
+  (props.showSiwcOption || props.showSiwcJsonOption) && hasCodexFamilyOptions.value
+)
 const authFamily = computed<OpenAIAuthFamily>(() =>
   inputMethod.value === 'siwc' || inputMethod.value === 'siwc_json' ? 'siwc' : 'codex'
 )

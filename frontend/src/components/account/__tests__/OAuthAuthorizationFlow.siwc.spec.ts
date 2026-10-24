@@ -84,6 +84,14 @@ describe('OAuthAuthorizationFlow SIWC section', () => {
     expect(disabled.find('[data-testid="oauth-method-siwc"]').exists()).toBe(false)
   })
 
+  it('shows only SIWC methods without tabs when step 1 already picked SIWC', () => {
+    const w = mountFlow({ showManualOption: false, initialInputMethod: 'siwc' })
+    expect(w.find('[data-testid="oauth-family-tabs"]').exists()).toBe(false)
+    expect(w.find('[data-testid="oauth-method-siwc"]').exists()).toBe(true)
+    expect(w.find('[data-testid="oauth-method-siwc-json"]').exists()).toBe(true)
+    expect(w.find('input[value="manual"]').exists()).toBe(false)
+  })
+
   it('emits generate-siwc-url with the trimmed agent name', async () => {
     const w = mountFlow({ initialInputMethod: 'siwc' })
     await flushPromises()
