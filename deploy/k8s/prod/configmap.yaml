@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sub2api-config
+  namespace: tokensolo
+data:
+  TZ: "Asia/Shanghai"
+
+  # ---- 安装引导（两阶段，见同目录 README.md）----
+  # 首发：AUTO_SETUP=true 走 setup 路径 —— 建库(若不存在)、跑迁移、创建管理员、写 config.yaml 到 DATA_DIR
+  # 首发成功后：把 SKIP_SETUP 改为 "true" 并 rollout。理由：setup 路径的迁移超时短且无重试，
+  # 每次启动还会连 postgres 维护库、把密码明文写进 emptyDir；稳态运行用主路径（10 分钟超时 + 指数退避）更稳。
+  # SKIP_SETUP 优先级高于 AUTO_SETUP，两者可同时保留。
+  AUTO_SETUP: "true"
+  # 2026-09-10 首发完成（管理员已创建），已切为 true
+  SKIP_SETUP: "true"
+  # setup 路径迁移超时（秒），默认 60s 不够 285 个迁移文件首次执行
+  SETUP_MIGRATION_TIMEOUT_SECONDS: "600"
+  # /app/data 挂 emptyDir：config.yaml / .installed / 插件目录都是可再生的，不需要 PVC
+  DATA_DIR: "/app/data"
+
+  # ---- HTTP 服务 ----
+  SERVER_HOST: "0.0.0.0"
+  SERVER_PORT: "8080"
+  SERVER_MODE: "release"
+  RUN_MODE: "standard"
+  # ingress-nginx / 集群内调用方都在 VPC 网段内；只为让 release 模式信任 X-Forwarded-For 并消除启动告警
+  SERVER_TRUSTED_PROXIES: "172.16.0.0/12"
+
+  # ---- 日志：只输出 stdout JSON，交由腾讯云 CLS（采集规则 tokensolo-tke 覆盖整个 namespace）----
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+  LOG_OUTPUT_TO_STDOUT: "true"
+  LOG_OUTPUT_TO_FILE: "false"
+  LOG_SERVICE_NAME: "sub2api"
+  LOG_ENV: "prod"
+
+  # ---- PostgreSQL（TencentDB 172.16.1.76，与 tokensolo 同实例、独立 database）----
+  # HOST/USER/PASSWORD 在 Secret sub2api 中
+  DATABASE_PORT: "5432"
+  DATABASE_DBNAME: "sub2api"
+  DATABASE_SSLMODE: "disable"
+  # 上游默认 256/128，共用 2c4g 实例过大（tokensolo 用 60/20）
+  DATABASE_MAX_OPEN_CONNS: "40"
+  DATABASE_MAX_IDLE_CONNS: "10"
+
+  # ---- Redis（TencentDB 172.16.1.111，三服务共用同一实例：crs=0，tokensolo=1，sub2api=2）----
+  # HOST/PASSWORD 在 Secret sub2api 中
+  REDIS_PORT: "6379"
+  REDIS_DB: "2"
+  # setup 路径按字面 == "true" 比较，只能小写
+  REDIS_ENABLE_TLS: "false"
+  # 上游默认 1024/128，压到与 tokensolo 一致的量级
+  REDIS_POOL_SIZE: "100"
+  REDIS_MIN_IDLE_CONNS: "10"
+
+  # ---- 管理员（仅 users 表为空时的首次 bootstrap 使用；密码在 Secret）----
+  ADMIN_EMAIL: "admin@tokensolo.com"

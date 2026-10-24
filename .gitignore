@@ -167,3 +167,7 @@ issues/
 
 # 本地临时文件（脚本 / 验证产物）
 .tmp/
+
+# K8s 部署：真实 Secret 只留本机，绝不入库（模板见 deploy/k8s/prod/README.md）
+*secret*.yaml
+*secret*.yml

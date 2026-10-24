@@ -1,0 +1,178 @@
+# sub2api-gate：tokensolo → sub2api 之间的极简 nginx 闸门
+#
+# 目的：在不改 sub2api / tokensolo 代码的前提下，拒绝 POST /v1/chat/completions（直接 400），
+#       其余路径（/v1/responses、/health、/v1/models …）原样透传到 svc/sub2api:8080。
+# 背景：tokensolo 走集群内 Service 直连 sub2api，不经过 ingress-nginx，所以 ingress 规则拦不到；
+#       只能在中间加一跳。2026-09-14 数据：chat/completions 入站 1149 次中 967 次被 Codex 后端判
+#       invalid_prompt（84%），而同模型 /v1/responses 入站 1310 次仅 9 次被判（0.7%）。
+# 用法：
+#   kubectl apply -f gate.yaml
+#   kubectl -n tokensolo rollout status deploy/sub2api-gate
+#   然后把 tokensolo 渠道（先测试渠道 20518，再 20507）的代理地址改为
+#   http://sub2api-gate.tokensolo.svc.cluster.local:8080
+# 回滚：渠道地址改回 http://sub2api.tokensolo.svc.cluster.local:8080，再 kubectl delete -f gate.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sub2api-gate-nginx
+  namespace: tokensolo
+  labels:
+    app: sub2api-gate
+data:
+  nginx.conf: |
+    worker_processes auto;
+    error_log /dev/stderr warn;
+    pid /tmp/nginx.pid;
+    events {
+      worker_connections 4096;
+    }
+    http {
+      # 与 sub2api-ingress 保持一致：允许带下划线的请求头透传
+      underscores_in_headers on;
+      client_max_body_size 50m;
+      client_body_temp_path /tmp/client_body;
+      proxy_temp_path /tmp/proxy;
+      server_tokens off;
+
+      log_format gate '$time_iso8601 $remote_addr "$request" $status '
+                      'rt=$request_time urt=$upstream_response_time ua="$http_user_agent" '
+                      'xrid="$http_x_request_id"';
+      access_log /dev/stdout gate;
+
+      # 有 Upgrade 头时透传 websocket，否则用空 Connection 保持到上游的 keepalive
+      map $http_upgrade $gate_connection {
+        default upgrade;
+        ''      '';
+      }
+
+      upstream sub2api_backend {
+        server sub2api.tokensolo.svc.cluster.local:8080;
+        keepalive 64;
+      }
+
+      server {
+        listen 8080;
+
+        # 闸门自身健康检查（不打到 sub2api）
+        location = /gate-health {
+          default_type application/json;
+          return 200 '{"status":"ok","component":"sub2api-gate"}';
+        }
+
+        # 被拒绝的协议：立刻 400，tokensolo 对 4xx 不重试、不换渠道，客户端秒收
+        location = /v1/chat/completions {
+          default_type application/json;
+          add_header X-Sub2api-Gate "chat-completions-disabled" always;
+          return 400 '{"error":{"type":"invalid_request_error","code":"endpoint_disabled","message":"/v1/chat/completions is not served by this gateway. Please use /v1/responses."}}';
+        }
+
+        # 其余全部透传（流式友好：关缓冲、长超时、HTTP/1.1 keepalive）
+        location / {
+          proxy_pass http://sub2api_backend;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $gate_connection;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_pass_request_headers on;
+          proxy_buffering off;
+          proxy_request_buffering off;
+          proxy_connect_timeout 10s;
+          proxy_send_timeout 1800s;
+          proxy_read_timeout 1800s;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sub2api-gate
+  namespace: tokensolo
+  labels:
+    app: sub2api-gate
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sub2api-gate
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: sub2api-gate
+      annotations:
+        # 改 ConfigMap 后需要重启 Pod 才会生效：kubectl -n tokensolo rollout restart deploy/sub2api-gate
+        sub2api-gate/config-note: "nginx.conf comes from ConfigMap sub2api-gate-nginx"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: sub2api-gate
+      containers:
+      - name: nginx
+        image: nginx:1.27-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        volumeMounts:
+        - name: nginx-conf
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        readinessProbe:
+          httpGet:
+            path: /gate-health
+            port: 8080
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /gate-health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+      volumes:
+      - name: nginx-conf
+        configMap:
+          name: sub2api-gate-nginx
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sub2api-gate
+  namespace: tokensolo
+  labels:
+    app: sub2api-gate
+spec:
+  type: ClusterIP
+  selector:
+    app: sub2api-gate
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080

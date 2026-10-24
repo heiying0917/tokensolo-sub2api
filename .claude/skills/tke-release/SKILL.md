@@ -52,7 +52,7 @@ sub2api 是 tokensolo 的 **GPT 号池上游**（地位等同 tokensolo-crs）�
 
 - 平时对线上 TKE 集群是**只读**约束。**本 skill 是用户主动发版，流程内的 `kubectl set image / rollout / undo` 等集群写操作在此次发版中被授权**——仅限本发版流程，不扩展到其他场景。
 - **不自动 `git commit`**：预检若发现未提交改动，用 `AskUserQuestion` 询问用户是否提交及 commit message，得到确认后再 commit；tag / push / 部署属发版核心，用户调用即视为授权，自动执行。
-- **manifests 不在本仓库**：K8s 清单在 `../tokensolo/docs/deploy/k8s/manifests/prod/sub2api/`（同 crs 惯例）。日常发版只 `kubectl set image`，**不要** `kubectl apply -f` 该目录（会把镜像重置为清单里的初始 tag）。
+- **manifests 在本仓库**：K8s 清单在 `deploy/k8s/prod/`（2026-10-24 从 tokensolo 仓库迁入，单独维护；Ingress 仍在 `../tokensolo/docs/deploy/k8s/manifests/prod/ingress/`）。日常发版只 `kubectl set image`，**不要** `kubectl apply -f` 该目录（会把镜像重置为清单里的初始 tag）。
 
 ## 🚨 致命红线（高于所有 Phase）
 
@@ -121,7 +121,7 @@ tag 在 Phase 1 确认版本号之前用 `待定`。
 | 容器内自检 | `kubectl exec -n tokensolo deploy/sub2api -- wget -qO- http://127.0.0.1:8080/health`（镜像只有 wget，没有 curl） |
 | KUBECONFIG | `~/.kube/tokensolo.config` |
 | Namespace | `tokensolo` |
-| manifests | `../tokensolo/docs/deploy/k8s/manifests/prod/sub2api/`（tokensolo 代码仓库） |
+| manifests | `deploy/k8s/prod/`（本仓库；`secret.yaml` git-ignored 只留本机） |
 | 发布报告目录 | `../tokensolo/docs/deploy/report/`（本仓库 `docs/*` 被上游 .gitignore 忽略） |
 
 ---
@@ -682,7 +682,7 @@ tccli cls SearchLog --TopicId $TOPIC --From $FROM --To $TO --UseNewAnalysis True
 
 1. **发版基于 main 分支**——打 tag 前确认本地 main 与 origin/main 一致（Phase 2 自动检查并 push）。
 2. **两套 tag 共存**：日期 tag（本 skill）触发 `Publish Docker image (GHCR)`；semver tag 触发上游 `Release`（GoReleaser）。日常只打日期 tag；merge 上游时 `git fetch upstream --tags` 带进来的 `v0.2.x` 不要 push 到 origin。
-3. **manifests / 报告都在 `../tokensolo/` 仓库**（tokensolo 代码仓库的本机目录）：首次部署、改 ConfigMap、切 SKIP_SETUP、从旧 fork 镜像切换见 `../tokensolo/docs/deploy/k8s/manifests/prod/sub2api/README.md`。
+3. **manifests / 报告都在 `../tokensolo/` 仓库**（tokensolo 代码仓库的本机目录）：首次部署、改 ConfigMap、切 SKIP_SETUP、从旧 fork 镜像切换见 `deploy/k8s/prod/README.md`。
 4. **发版路径**：主路径用本 skill（含 Phase 4 冒烟 + Phase 6 监控）。`tke-manual-release.yml` 仅保留 `workflow_dispatch` 作为紧急备用（需仓库 secret `KUBECONFIG_TKE`，与 tokensolo-cpa 同一份），无冒烟，用后补测。
 6. **与旧 fork 的关系**：旧 fork `XuYang8026/sub2api`（镜像 `ghcr.io/xuyang8026/sub2api`）的发版历史与事故复盘仍在 `../tokensolo/docs/deploy/report/`，本仓库从 `v2026.10.23.1` 起接管；不要再在旧 fork 目录打 tag。
 5. 与 tokensolo 的 tke-release skill 保持结构一致；通用坑（gh run watch、noop、RTK hook、tccli 代理）两边同步更新。

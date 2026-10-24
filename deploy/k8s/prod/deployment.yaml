@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sub2api
+  namespace: tokensolo
+spec:
+  # 3 副本（2026-09-10 首发后扩容）。多实例安全依据：迁移 PG advisory lock、OAuth 刷新 Redis 分布式锁、
+  # 后台任务 leader lock、并发/会话计数在 Redis、outbox 跨实例缓存失效
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sub2api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: sub2api
+    spec:
+      # 拉取密钥与 cpa 共用（新 owner heiying0917 的 GHCR token，cpa 首发时创建）
+      imagePullSecrets:
+      - name: ghcr-secret-heiying0917
+      # 上游 Shutdown 超时硬编码 5s（backend/cmd/server/main.go），preStop(15s) + 5s + 余量 = 30s
+      # 注意：超过 5s 的在途流式请求在滚动时会被切断，这是上游行为
+      terminationGracePeriodSeconds: 30
+      affinity:
+        podAntiAffinity:
+          # 软约束：尽量分散到不同节点（3 节点 3 副本正常情况下一节点一个）
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: sub2api
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: sub2api
+        # 日常发版走 /tke-release 的 kubectl set image，此处仅为首次 apply 的初始版本
+        # 2026-10-23 起切换到新 fork heiying0917/tokensolo-sub2api（占位 tag，首次发版后同步为实际 tag）
+        image: ghcr.io/heiying0917/tokensolo-sub2api:v2026.10.23.1
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: sub2api-config
+        env:
+        - name: DATABASE_HOST
+          valueFrom:
+            secretKeyRef:
+              name: sub2api
+              key: DATABASE_HOST
+        - name: DATABASE_USER
+          valueFrom:
+            secretKeyRef:
+              name: sub2api
+              key: DATABASE_USER
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: sub2api
+              key: DATABASE_PASSWORD
+        - name: REDIS_HOST
+          valueFrom:
+            secretKeyRef:
+              name: sub2api
+              key: REDIS_HOST
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: sub2api
+              key: REDIS_PASSWORD
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: sub2api
+              key: JWT_SECRET
+        - name: TOTP_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: sub2api
+              key: TOTP_ENCRYPTION_KEY
+        - name: ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: sub2api
+              key: ADMIN_PASSWORD
+        # 迁移完成前进程不监听端口，/health 连接拒绝即"未就绪"；startupProbe 给首次迁移最多 5 分钟
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          periodSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          periodSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          periodSeconds: 30
+          failureThreshold: 3
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 15"]
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+      volumes:
+      # 镜像 entrypoint 以 root 启动后 chown 此目录再降权到 sub2api 用户，无需 securityContext
+      - name: data
+        emptyDir: {}
