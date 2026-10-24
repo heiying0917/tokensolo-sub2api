@@ -301,19 +301,24 @@
             <AccountCapacityCell :account="row" />
           </template>
           <template #cell-status="{ row }">
-            <div class="flex items-center gap-1.5">
-              <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
-              <SiwcGateBadge :account="row" @show-gate="handleShowSiwcGate" />
+            <div class="flex min-w-0 flex-col gap-1">
+              <div class="flex items-center gap-1.5">
+                <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
+                <SiwcGateBadge :account="row" part="gate" @show-gate="handleShowSiwcGate" />
+              </div>
+              <!-- SIWC：Agent 摘要作为状态的第二行，样式同「平台/类型」列的附加信息行 -->
               <button
                 v-if="isSiwcAccount(row)"
                 type="button"
-                :class="['badge text-xs', siwcAgentBadgeClass(row)]"
+                :class="['inline-flex items-center gap-1.5 pl-0.5 text-left text-[11px] font-medium leading-4 hover:underline', siwcAgentMeta(row).className]"
                 :data-testid="`siwc-agent-badge-${row.id}`"
                 :title="t('admin.accounts.siwcAgents.menu')"
                 @click.stop="handleShowSiwcAgents(row)"
               >
-                {{ siwcAgentBadgeText(row) }}
+                <span :class="['h-1.5 w-1.5 shrink-0 rounded-full', siwcAgentMeta(row).dotClass]" />
+                <span class="whitespace-nowrap">{{ siwcAgentMeta(row).label }}</span>
               </button>
+              <SiwcGateBadge :account="row" part="meta" @show-gate="handleShowSiwcGate" />
             </div>
           </template>
           <template #cell-schedulable="{ row }">
@@ -2576,18 +2581,18 @@ const showSiwcAgents = ref(false)
 const siwcAgentsAcc = ref<Account | null>(null)
 const siwcAgentsReauthId = ref<number | null>(null)
 const isSiwcStandby = (a: Account) => isSiwcAccount(a) && a.extra?.siwc_agent_role === 'standby'
-// 主行徽标：「{n} 个 Agent · 活跃 #id」；没有可用活跃 Agent 时提示无活跃
-const siwcAgentBadgeText = (a: Account) => {
+// 状态列第二行：活跃 Agent 与 Agent 数（暂停 / 无可用时换颜色与文案）
+const siwcAgentMeta = (a: Account) => {
   const summary = a.siwc_agents
-  if (!summary) return isSiwcStandby(a) ? t('admin.accounts.siwcAgents.roleStandby') : t('admin.accounts.siwcAgents.roleActive')
-  if (summary.paused) return t('admin.accounts.siwcAgents.badgePaused', { count: summary.count })
-  if (!summary.active_account_id) return t('admin.accounts.siwcAgents.badgeNoActive', { count: summary.count })
-  return t('admin.accounts.siwcAgents.badge', { count: summary.count, id: summary.active_account_id })
-}
-const siwcAgentBadgeClass = (a: Account) => {
-  const summary = a.siwc_agents
-  if (summary) return summary.paused ? 'badge-gray' : summary.active_account_id ? 'badge-success' : 'badge-warning'
-  return isSiwcStandby(a) ? 'badge-gray' : 'badge-success'
+  const count = summary?.count ?? 1
+  if (summary?.paused) {
+    return { label: t('admin.accounts.siwcAgents.metaPaused', { count }), className: 'text-gray-500 dark:text-gray-400', dotClass: 'bg-gray-400' }
+  }
+  const activeId = summary ? summary.active_account_id : (isSiwcStandby(a) ? 0 : a.id)
+  if (!activeId) {
+    return { label: t('admin.accounts.siwcAgents.metaNoActive', { count }), className: 'text-amber-600 dark:text-amber-400', dotClass: 'bg-amber-500' }
+  }
+  return { label: t('admin.accounts.siwcAgents.metaActive', { id: activeId, count }), className: 'text-emerald-600 dark:text-emerald-400', dotClass: 'bg-emerald-500' }
 }
 const deleteConfirmMessage = computed(() => {
   const acc = deletingAcc.value
