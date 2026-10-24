@@ -1,5 +1,6 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { defineComponent } from 'vue'
 import OAuthAuthorizationFlow from '../OAuthAuthorizationFlow.vue'
 
 const mocks = vi.hoisted(() => ({
@@ -35,8 +36,18 @@ beforeEach(() => {
   })
 })
 
+// 通用 Select 渲染成原生 select，便于断言选项与选值
+const SelectStub = defineComponent({
+  props: { modelValue: { type: [String, Number, Boolean, null], default: null }, options: { type: Array, default: () => [] } },
+  emits: ['update:modelValue'],
+  template: `<select v-bind="$attrs" :value="modelValue ?? ''" @change="$emit('update:modelValue', $event.target.value)">
+    <option v-for="o in options" :key="String(o.value)" :value="o.value ?? ''">{{ o.label }}</option>
+  </select>`
+})
+
 function mountFlow(extraProps: Record<string, unknown> = {}) {
   return mount(OAuthAuthorizationFlow, {
+    global: { stubs: { Select: SelectStub } },
     props: {
       addMethod: 'oauth',
       platform: 'openai',

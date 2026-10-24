@@ -1769,17 +1769,12 @@
       <!-- SIWC：管理凭据（同邮箱 Codex OAuth 账号，用于查额度与同步模型） -->
       <div v-if="isSiwc" data-testid="edit-siwc-management">
         <label class="input-label">{{ t('admin.accounts.oauth.openai.siwcManagementLabel') }}</label>
-        <select
-          v-model="siwcManagementAccountId"
-          class="input w-full text-sm"
+        <Select
+          v-model="siwcManagementSelectValue"
+          :options="siwcManagementSelectOptions"
           :disabled="siwcManagementLoading"
           data-testid="edit-siwc-management-select"
-        >
-          <option :value="null">{{ t('admin.accounts.oauth.openai.siwcManagementNone') }}</option>
-          <option v-for="option in siwcManagementOptions" :key="option.id" :value="option.id">
-            #{{ option.id }} · {{ option.name }}<template v-if="option.email"> · {{ option.email }}</template>
-          </option>
-        </select>
+        />
         <p
           v-if="siwcManagementAccountId === null && siwcAutoMatchedOption"
           class="mt-1 text-xs text-gray-500 dark:text-gray-400"
@@ -3409,6 +3404,22 @@ const siwcAutoMatchedOption = computed(() =>
     .filter((option) => option.status === 'active' && option.email.toLowerCase() === siwcAccountEmail.value)
     .sort((a, b) => a.id - b.id)[0] || null
 )
+
+// 与代理等下拉框统一用通用 Select；值统一转成 number | null
+const siwcManagementSelectOptions = computed(() => [
+  { value: null, label: t('admin.accounts.oauth.openai.siwcManagementNone') },
+  ...siwcManagementOptions.value.map((option) => ({
+    value: option.id,
+    label: `#${option.id} · ${option.name}${option.email ? ` · ${option.email}` : ''}`
+  }))
+])
+const siwcManagementSelectValue = computed<number | null>({
+  get: () => siwcManagementAccountId.value,
+  set: (value) => {
+    const id = value === null || (value as unknown) === '' ? null : Number(value)
+    siwcManagementAccountId.value = id !== null && Number.isInteger(id) && id > 0 ? id : null
+  }
+})
 
 const loadSiwcManagementOptions = async () => {
   siwcManagementLoading.value = true

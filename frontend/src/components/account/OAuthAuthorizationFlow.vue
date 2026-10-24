@@ -727,17 +727,12 @@
                 <p class="mb-2 font-medium text-blue-900 dark:text-blue-200">
                   {{ t('admin.accounts.oauth.openai.siwcManagementLabel') }}
                 </p>
-                <select
-                  v-model="siwcManagementAccountId"
-                  class="input w-full text-sm"
+                <Select
+                  v-model="siwcManagementSelectValue"
+                  :options="siwcManagementSelectOptions"
                   :disabled="loading || siwcManagementLoading"
                   data-testid="siwc-management-select"
-                >
-                  <option :value="null">{{ t('admin.accounts.oauth.openai.siwcManagementNone') }}</option>
-                  <option v-for="option in siwcManagementOptions" :key="option.id" :value="option.id">
-                    #{{ option.id }} · {{ option.name }}<template v-if="option.email"> · {{ option.email }}</template>
-                  </option>
-                </select>
+                />
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   {{ t('admin.accounts.oauth.openai.siwcManagementHint') }}
                 </p>
@@ -1241,6 +1236,7 @@ import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useClipboard } from '@/composables/useClipboard'
 import Icon from '@/components/icons/Icon.vue'
+import Select from '@/components/common/Select.vue'
 import type { AddMethod, AuthInputMethod } from '@/composables/useAccountOAuth'
 import type { AccountPlatform, CodexSessionImportItem, CodexSessionImportResult } from '@/types'
 import { adminAPI } from '@/api/admin'
@@ -1553,6 +1549,22 @@ const siwcImportActionClass = (action: CodexSessionImportItem['action']) => {
 }
 
 /** 加载可作为管理凭据的账号：同平台 type=oauth 且 credentials.auth_mode 为空（即普通 Codex OAuth）。 */
+const siwcManagementSelectOptions = computed(() => [
+  { value: null, label: t('admin.accounts.oauth.openai.siwcManagementNone') },
+  ...siwcManagementOptions.value.map((option) => ({
+    value: option.id,
+    label: `#${option.id} · ${option.name}${option.email ? ` · ${option.email}` : ''}`
+  }))
+])
+
+const siwcManagementSelectValue = computed<number | null>({
+  get: () => siwcManagementAccountId.value,
+  set: (value) => {
+    const id = value === null || (value as unknown) === '' ? null : Number(value)
+    siwcManagementAccountId.value = id !== null && Number.isInteger(id) && id > 0 ? id : null
+  }
+})
+
 const loadSiwcManagementOptions = async () => {
   siwcManagementLoading.value = true
   siwcManagementLoadFailed.value = false
