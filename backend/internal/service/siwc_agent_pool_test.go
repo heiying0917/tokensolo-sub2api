@@ -279,3 +279,68 @@ func TestAccountListHideSIWCAgentChildrenContext(t *testing.T) {
 	require.False(t, AccountListHidesSIWCAgentChildren(context.Background()))
 	require.True(t, AccountListHidesSIWCAgentChildren(WithAccountListHideSIWCAgentChildren(context.Background())))
 }
+
+func TestSIWCAgentPool_PauseAndResumeWholeAccount(t *testing.T) {
+	primary := siwcAgent(2, "a@x.com", SIWCAgentRoleStandby, false)
+	primary.Extra[siwcAgentParentExtraKey] = int64(0)
+	active := siwcAgent(6, "a@x.com", SIWCAgentRoleActive, true)
+	active.Extra[siwcAgentParentExtraKey] = int64(2)
+	repo := newSIWCAgentRepoStub(primary, active)
+	pool := NewSIWCAgentPoolService(repo, nil, &fakeLeaderLockCache{}, &runtimeBlockerStub{})
+	ctx := context.Background()
+
+	// 暂停：全部不可调度，角色保留，主行打标
+	group, err := pool.SetAccountPaused(ctx, 2, true, "admin")
+	require.NoError(t, err)
+	require.True(t, group.Paused)
+	require.Empty(t, schedulableIDs(repo.siwcGateRepoStub))
+	require.Equal(t, SIWCAgentRoleActive, repo.accountsByID[6].GetOpenAISIWCAgentRole())
+
+	// 暂停期间活跃 Agent 失效：故障转移只调整角色，不打开调度
+	require.NoError(t, repo.SetError(ctx, 6, "invalid_grant"))
+	pool.Failover(ctx, repo.accountsByID[6])
+	require.Empty(t, schedulableIDs(repo.siwcGateRepoStub), "暂停中不能被系统动作重新打开")
+	require.Equal(t, SIWCAgentRoleActive, repo.accountsByID[2].GetOpenAISIWCAgentRole())
+
+	// 恢复：活跃 Agent #2 可用 → 只有它可调度，暂停标记清除
+	group, err = pool.SetAccountPaused(ctx, 2, false, "admin")
+	require.NoError(t, err)
+	require.False(t, group.Paused)
+	require.ElementsMatch(t, []int64{2}, schedulableIDs(repo.siwcGateRepoStub))
+
+	// 全部不可用时恢复失败
+	require.NoError(t, repo.SetError(ctx, 2, "invalid_grant"))
+	_, err = pool.SetAccountPaused(ctx, 2, false, "admin")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no usable agent")
+}
+
+func TestSIWCAgentPool_ManualActivateResumesPausedAccount(t *testing.T) {
+	primary := siwcAgent(2, "a@x.com", SIWCAgentRoleActive, false)
+	primary.Extra[siwcAgentParentExtraKey] = int64(0)
+	primary.Extra[siwcAccountPausedExtraKey] = true
+	child := siwcAgent(6, "a@x.com", SIWCAgentRoleStandby, false)
+	child.Extra[siwcAgentParentExtraKey] = int64(2)
+	repo := newSIWCAgentRepoStub(primary, child)
+	pool := NewSIWCAgentPoolService(repo, nil, &fakeLeaderLockCache{}, &runtimeBlockerStub{})
+
+	group, err := pool.Activate(context.Background(), 6, "admin")
+	require.NoError(t, err)
+	require.False(t, group.Paused)
+	require.ElementsMatch(t, []int64{6}, schedulableIDs(repo.siwcGateRepoStub))
+}
+
+func TestSIWCAgentPool_SummaryReportsPausedAndActive(t *testing.T) {
+	primary := siwcAgent(2, "a@x.com", SIWCAgentRoleStandby, false)
+	primary.Extra[siwcAgentParentExtraKey] = int64(0)
+	active := siwcAgent(6, "a@x.com", SIWCAgentRoleActive, true)
+	active.Extra[siwcAgentParentExtraKey] = int64(2)
+	repo := newSIWCAgentRepoStub(primary, active)
+	pool := NewSIWCAgentPoolService(repo, nil, &fakeLeaderLockCache{}, &runtimeBlockerStub{})
+
+	summaries := pool.SummariesFor(context.Background(), []Account{*repo.accountsByID[2]})
+	require.Equal(t, 2, summaries[2].Count)
+	require.Equal(t, int64(6), summaries[2].ActiveAccountID)
+	require.False(t, summaries[2].Paused)
+	require.Equal(t, int64(6), summaries[2].Active.ID)
+}

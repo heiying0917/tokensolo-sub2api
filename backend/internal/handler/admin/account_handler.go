@@ -705,6 +705,13 @@ func (h *AccountHandler) List(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	// SIWC 主行代表整个 ChatGPT 账号：状态 / 可调度按账号（活跃 Agent + 暂停标记）展示
+	siwcSummaries := h.siwcAgentPool.SummariesFor(c.Request.Context(), accounts)
+	for i := range accounts {
+		if summary, ok := siwcSummaries[accounts[i].ID]; ok {
+			applySIWCAccountView(&accounts[i], summary)
+		}
+	}
 	if len(accounts) > 0 {
 		accountPointers := make([]*service.Account, len(accounts))
 		for index := range accounts {
@@ -865,9 +872,9 @@ func (h *AccountHandler) List(c *gin.Context) {
 	}
 
 	h.enrichShadowParents(c.Request.Context(), result)
-	if summaries := h.siwcAgentPool.SummariesFor(c.Request.Context(), accounts); len(summaries) > 0 {
+	if len(siwcSummaries) > 0 {
 		for i := range result {
-			if summary, ok := summaries[result[i].ID]; ok {
+			if summary, ok := siwcSummaries[result[i].ID]; ok {
 				result[i].SIWCAgents = summary
 			}
 		}
@@ -2793,6 +2800,24 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 	response.Success(c, payload)
 }
 
+// applySIWCAccountView 把 SIWC 主行的展示状态换成账号级：
+// 有活跃 Agent 时状态取活跃 Agent；可调度 = 未暂停且有可用活跃 Agent。只改展示副本，不落库。
+func applySIWCAccountView(account *service.Account, summary *service.SIWCAgentSummary) {
+	if account == nil || summary == nil {
+		return
+	}
+	if active := summary.Active; active != nil && active.ID != account.ID {
+		account.Status = active.Status
+		account.ErrorMessage = active.ErrorMessage
+		account.RateLimitedAt = active.RateLimitedAt
+		account.RateLimitResetAt = active.RateLimitResetAt
+		account.OverloadUntil = active.OverloadUntil
+		account.TempUnschedulableUntil = active.TempUnschedulableUntil
+		account.TempUnschedulableReason = active.TempUnschedulableReason
+	}
+	account.Schedulable = !summary.Paused && summary.Active != nil && summary.Active.Schedulable
+}
+
 // mergeSIWCAgentTodayStats 把子 Agent 的今日用量累加到主行，并只返回请求的账号。
 func mergeSIWCAgentTodayStats(stats map[int64]*service.WindowStats, requested []int64, children map[int64][]int64) map[int64]*service.WindowStats {
 	if len(children) == 0 {
@@ -2879,6 +2904,11 @@ func (h *AccountHandler) SetSchedulable(c *gin.Context) {
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+	if account.IsOpenAISIWC() {
+		if summaries := h.siwcAgentPool.SummariesFor(c.Request.Context(), []service.Account{*account}); summaries[account.ID] != nil {
+			applySIWCAccountView(account, summaries[account.ID])
+		}
 	}
 
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))

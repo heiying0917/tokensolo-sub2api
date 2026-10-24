@@ -2537,16 +2537,12 @@ const handleDelete = (a: Account) => { deletingAcc.value = a; showDeleteDialog.v
 const confirmDelete = async () => { if(!deletingAcc.value) return; try { await adminAPI.accounts.delete(deletingAcc.value.id); showDeleteDialog.value = false; deletingAcc.value = null; reload() } catch (error) { console.error('Failed to delete account:', error) } }
 const handleToggleSchedulable = async (a: Account) => {
   const nextSchedulable = !a.schedulable
-  // 待命 SIWC Agent 由「Agent 管理」切换，不能直接打开调度（同一账号只允许一个活跃 Agent）
-  if (nextSchedulable && isSiwcStandby(a)) {
-    appStore.showInfo(t('admin.accounts.siwcAgents.standbyToggleHint'))
-    handleShowSiwcAgents(a)
-    return
-  }
   togglingSchedulable.value = a.id
   try {
     const updated = await adminAPI.accounts.setSchedulable(a.id, nextSchedulable)
     updateSchedulableInList([a.id], updated?.schedulable ?? nextSchedulable)
+    // SIWC 开关作用于整个 ChatGPT 账号，刷新一次拿到最新的 Agent 摘要与状态
+    if (isSiwcAccount(a)) load()
     enterAutoRefreshSilentWindow()
   } catch (error) {
     console.error('Failed to toggle schedulable:', error)
@@ -2584,12 +2580,13 @@ const isSiwcStandby = (a: Account) => isSiwcAccount(a) && a.extra?.siwc_agent_ro
 const siwcAgentBadgeText = (a: Account) => {
   const summary = a.siwc_agents
   if (!summary) return isSiwcStandby(a) ? t('admin.accounts.siwcAgents.roleStandby') : t('admin.accounts.siwcAgents.roleActive')
+  if (summary.paused) return t('admin.accounts.siwcAgents.badgePaused', { count: summary.count })
   if (!summary.active_account_id) return t('admin.accounts.siwcAgents.badgeNoActive', { count: summary.count })
   return t('admin.accounts.siwcAgents.badge', { count: summary.count, id: summary.active_account_id })
 }
 const siwcAgentBadgeClass = (a: Account) => {
   const summary = a.siwc_agents
-  if (summary) return summary.active_account_id ? 'badge-success' : 'badge-warning'
+  if (summary) return summary.paused ? 'badge-gray' : summary.active_account_id ? 'badge-success' : 'badge-warning'
   return isSiwcStandby(a) ? 'badge-gray' : 'badge-success'
 }
 const deleteConfirmMessage = computed(() => {

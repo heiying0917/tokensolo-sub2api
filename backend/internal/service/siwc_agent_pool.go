@@ -22,7 +22,9 @@ const (
 	siwcAgentRoleExtraKey = "siwc_agent_role"
 	// siwcAgentParentExtraKey 子 Agent 指向主行 ID；主行写 0。管理端账号列表只显示主行。
 	siwcAgentParentExtraKey = "siwc_agent_parent_id"
-	siwcAgentSwitchLockTTL  = 15 * time.Second
+	// siwcAccountPausedExtraKey 写在主行上：整个 ChatGPT 账号被手动暂停（列表开关关闭）。
+	siwcAccountPausedExtraKey = "siwc_account_paused"
+	siwcAgentSwitchLockTTL    = 15 * time.Second
 )
 
 // GetOpenAISIWCAgentRole 返回 SIWC Agent 角色；非 SIWC 账号返回空串。
@@ -101,6 +103,7 @@ type SIWCAgentView struct {
 type SIWCAgentGroup struct {
 	Email                 string          `json:"email"`
 	PrimaryAccountID      int64           `json:"primary_account_id"`
+	Paused                bool            `json:"paused"`
 	ActiveAccountID       int64           `json:"active_account_id"`
 	ManagementAccountID   int64           `json:"management_account_id"`
 	ManagementAccountName string          `json:"management_account_name,omitempty"`
@@ -142,7 +145,7 @@ func (s *SIWCAgentPoolService) List(ctx context.Context, accountID int64) (*SIWC
 	if err != nil {
 		return nil, err
 	}
-	group := &SIWCAgentGroup{Email: email, PrimaryAccountID: primaryID, Agents: make([]SIWCAgentView, 0, len(siblings))}
+	group := &SIWCAgentGroup{Email: email, PrimaryAccountID: primaryID, Paused: siwcGroupPaused(siblings), Agents: make([]SIWCAgentView, 0, len(siblings))}
 	for i := range siblings {
 		sib := &siblings[i]
 		role := sib.GetOpenAISIWCAgentRole()
@@ -248,11 +251,22 @@ func (s *SIWCAgentPoolService) Activate(ctx context.Context, accountID int64, ac
 		return nil, err
 	}
 	defer release()
-
-	siblings, err := listOpenAISIWCSiblings(ctx, s.accountRepo, email)
-	if err != nil {
+	// 管理员手动「设为活跃」视为恢复使用该账号：解除账号级暂停；系统动作（故障转移 / 新建）尊重暂停
+	if err := s.activateLocked(ctx, target, email, actor, actor == "system"); err != nil {
 		return nil, err
 	}
+	return s.List(ctx, target.ID)
+}
+
+// activateLocked 在组锁内把 target 设为活跃、其余设为待命。
+// respectPause=true 且账号已暂停时只调整角色，不打开调度；否则解除暂停并打开 target 调度。
+func (s *SIWCAgentPoolService) activateLocked(ctx context.Context, target *Account, email, actor string, respectPause bool) error {
+	siblings, primaryID, err := s.normalizeGroup(ctx, email)
+	if err != nil {
+		return err
+	}
+	paused := siwcGroupPaused(siblings)
+	keepPaused := paused && respectPause
 	// 先降级其余 Agent 再提升目标，宁可短暂无活跃也不出现双活跃
 	for i := range siblings {
 		sib := &siblings[i]
@@ -263,17 +277,96 @@ func (s *SIWCAgentPoolService) Activate(ctx context.Context, accountID int64, ac
 			continue
 		}
 		if err := s.setRole(ctx, sib.ID, SIWCAgentRoleStandby, false); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	if err := s.setRole(ctx, target.ID, SIWCAgentRoleActive, true); err != nil {
-		return nil, err
+	if err := s.setRole(ctx, target.ID, SIWCAgentRoleActive, !keepPaused); err != nil {
+		return err
 	}
-	if s.runtimeBlocker != nil {
+	if paused && !keepPaused && primaryID > 0 {
+		if err := s.accountRepo.UpdateExtra(ctx, primaryID, map[string]any{siwcAccountPausedExtraKey: false}); err != nil {
+			return err
+		}
+	}
+	if !keepPaused && s.runtimeBlocker != nil {
 		s.runtimeBlocker.ClearAccountSchedulingBlock(target.ID)
 	}
-	s.recordAudit(actor, "siwc_agent.activate", email, map[string]any{"email": email, "account_id": target.ID})
-	return s.List(ctx, target.ID)
+	s.recordAudit(actor, "siwc_agent.activate", email, map[string]any{"email": email, "account_id": target.ID, "paused": keepPaused})
+	return nil
+}
+
+// siwcGroupPaused 报告 Agent 组所属账号是否被手动暂停（标记在主行上）。
+func siwcGroupPaused(siblings []Account) bool {
+	for i := range siblings {
+		if !siblings[i].IsOpenAISIWCAgentChild() {
+			if paused, ok := siblings[i].Extra[siwcAccountPausedExtraKey].(bool); ok {
+				return paused
+			}
+			return false
+		}
+	}
+	return false
+}
+
+// SetAccountPaused 暂停 / 恢复整个 ChatGPT 账号（列表上的可调度开关）。
+//   - 暂停：主行标记 paused，全部 Agent 关闭调度，角色不变（记住活跃的是哪一个）；
+//   - 恢复：解除标记，重新启用原活跃 Agent；它不可用时切到第一个可用 Agent；都不可用返回 409。
+func (s *SIWCAgentPoolService) SetAccountPaused(ctx context.Context, accountID int64, paused bool, actor string) (*SIWCAgentGroup, error) {
+	if s == nil || s.accountRepo == nil {
+		return nil, infraerrors.New(http.StatusInternalServerError, "SIWC_AGENT_NOT_CONFIGURED", "siwc agent pool is not configured")
+	}
+	anchor, err := s.loadSIWC(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	email := openAIAccountCredentialEmail(anchor)
+	release, err := s.acquireSwitchLock(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	siblings, primaryID, err := s.normalizeGroup(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	if paused {
+		if err := s.accountRepo.UpdateExtra(ctx, primaryID, map[string]any{siwcAccountPausedExtraKey: true}); err != nil {
+			return nil, err
+		}
+		for i := range siblings {
+			if siblings[i].Schedulable {
+				if err := s.accountRepo.SetSchedulable(ctx, siblings[i].ID, false); err != nil {
+					return nil, err
+				}
+			}
+		}
+		s.recordAudit(actor, "siwc_agent.pause", email, map[string]any{"email": email, "primary_account_id": primaryID})
+		return s.List(ctx, primaryID)
+	}
+
+	var target *Account
+	for i := range siblings {
+		if siblings[i].GetOpenAISIWCAgentRole() == SIWCAgentRoleActive && siwcAgentUsable(&siblings[i]) {
+			target = &siblings[i]
+			break
+		}
+	}
+	if target == nil {
+		for i := range siblings {
+			if siwcAgentUsable(&siblings[i]) {
+				target = &siblings[i]
+				break
+			}
+		}
+	}
+	if target == nil {
+		return nil, infraerrors.New(http.StatusConflict, "SIWC_AGENT_NONE_USABLE", "no usable agent for this account; re-authorize or add an agent first")
+	}
+	if err := s.activateLocked(ctx, target, email, actor, false); err != nil {
+		return nil, err
+	}
+	s.recordAudit(actor, "siwc_agent.resume", email, map[string]any{"email": email, "active_account_id": target.ID})
+	return s.List(ctx, primaryID)
 }
 
 // Failover 在活跃 Agent 凭据失效后切到下一个可用待命 Agent；待命 Agent 失效不动作。
@@ -541,6 +634,10 @@ type SIWCAgentSummary struct {
 	Count           int     `json:"count"`
 	ActiveAccountID int64   `json:"active_account_id"`
 	AgentIDs        []int64 `json:"agent_ids"`
+	// Paused 账号被手动暂停（列表开关关闭）
+	Paused bool `json:"paused"`
+	// Active 活跃 Agent 本身，供列表把账号状态按活跃 Agent 展示（不序列化）
+	Active *Account `json:"-"`
 }
 
 // SummariesFor 为一页账号里的 SIWC 主行汇总 Agent 数与活跃 Agent（一次 ListByPlatform）。
@@ -585,8 +682,15 @@ func (s *SIWCAgentPoolService) SummariesFor(ctx context.Context, accounts []Acco
 		summary := ensure(primaryID)
 		summary.Count++
 		summary.AgentIDs = append(summary.AgentIDs, acc.ID)
-		if summary.ActiveAccountID == 0 && acc.GetOpenAISIWCAgentRole() == SIWCAgentRoleActive && acc.Schedulable && siwcAgentUsable(acc) {
+		if acc.ID == primaryID {
+			if paused, ok := acc.Extra[siwcAccountPausedExtraKey].(bool); ok && paused {
+				summary.Paused = true
+			}
+		}
+		// 暂停时活跃 Agent 不可调度，但仍按角色认定"活跃的是哪一个"
+		if summary.ActiveAccountID == 0 && acc.GetOpenAISIWCAgentRole() == SIWCAgentRoleActive && siwcAgentUsable(acc) {
 			summary.ActiveAccountID = acc.ID
+			summary.Active = acc
 		}
 	}
 	return out

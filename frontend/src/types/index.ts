@@ -1790,6 +1790,7 @@ export interface SiwcAgentSummary {
   count: number
   active_account_id: number
   agent_ids: number[]
+  paused: boolean
 }
 
 /** SIWC Agent 角色：同一 ChatGPT 账号同一时刻只有一个 active 接流量。 */
@@ -1812,6 +1813,7 @@ export interface SiwcAgentView {
 export interface SiwcAgentGroup {
   email: string
   primary_account_id: number
+  paused: boolean
   active_account_id: number
   management_account_id: number
   management_account_name?: string

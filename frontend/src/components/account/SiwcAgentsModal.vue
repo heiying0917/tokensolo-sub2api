@@ -23,6 +23,13 @@
             </p>
           </div>
         </div>
+        <p
+          v-if="group.paused"
+          class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-200"
+          data-testid="siwc-agents-paused"
+        >
+          {{ t('admin.accounts.siwcAgents.pausedHint') }}
+        </p>
         <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.siwcAgents.hint') }}</p>
 
         <!-- Agent 列表 -->

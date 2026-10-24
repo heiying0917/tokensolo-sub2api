@@ -1262,6 +1262,12 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 			if syncErr := propagateSIWCAgentSettings(ctx, s.accountRepo, primary); syncErr != nil {
 				slog.Warn("bulk_update.siwc_agent_sync_failed", "account_id", accountID, "error", syncErr)
 			}
+			// 批量开关调度对 SIWC 按账号暂停 / 恢复，纠正上面直接写入的 schedulable（保证单活跃）
+			if input.Schedulable != nil && primary.IsOpenAISIWC() && s.siwcAgentPool != nil {
+				if _, pauseErr := s.siwcAgentPool.SetAccountPaused(ctx, accountID, !*input.Schedulable, "admin"); pauseErr != nil {
+					slog.Warn("bulk_update.siwc_pause_failed", "account_id", accountID, "error", pauseErr)
+				}
+			}
 		}
 
 		entry.Success = true
@@ -1419,15 +1425,27 @@ func (s *adminServiceImpl) SetAccountError(ctx context.Context, id int64, errorM
 	return s.accountRepo.SetError(ctx, id, errorMsg)
 }
 
+// SetSIWCAgentPool 注入 SIWC 多 Agent 池（可选）。
+func (s *adminServiceImpl) SetSIWCAgentPool(pool *SIWCAgentPoolService) {
+	if s != nil {
+		s.siwcAgentPool = pool
+	}
+}
+
 func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, schedulable bool) (*Account, error) {
-	if schedulable {
-		current, err := s.accountRepo.GetByID(ctx, id)
-		if err != nil {
+	current, err := s.accountRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	// SIWC：列表上的开关代表整个 ChatGPT 账号——关闭 = 暂停账号，打开 = 恢复原活跃 Agent
+	if current.IsOpenAISIWC() && s.siwcAgentPool != nil {
+		if _, err := s.siwcAgentPool.SetAccountPaused(ctx, id, !schedulable, "admin"); err != nil {
 			return nil, err
 		}
-		if current.IsOpenAISIWCStandby() {
-			return nil, ErrSIWCAgentStandbySchedulable
-		}
+		return s.accountRepo.GetByID(ctx, id)
+	}
+	if schedulable && current.IsOpenAISIWCStandby() {
+		return nil, ErrSIWCAgentStandbySchedulable
 	}
 	if err := s.accountRepo.SetSchedulable(ctx, id, schedulable); err != nil {
 		return nil, err

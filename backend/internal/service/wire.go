@@ -163,8 +163,12 @@ func ProvideSIWCAgentPoolService(
 	tokenRefresh *TokenRefreshService,
 	rateLimit *RateLimitService,
 	refreshAPI *OAuthRefreshAPI,
+	adminService AdminService,
 ) *SIWCAgentPoolService {
 	svc := NewSIWCAgentPoolService(accountRepo, audit, lockCache, runtimeBlocker)
+	if impl, ok := adminService.(*adminServiceImpl); ok {
+		impl.SetSIWCAgentPool(svc)
+	}
 	tokenRefresh.SetSIWCAgentFailover(svc)
 	rateLimit.SetSIWCAgentFailover(svc)
 	refreshAPI.SetSIWCAgentFailover(svc)

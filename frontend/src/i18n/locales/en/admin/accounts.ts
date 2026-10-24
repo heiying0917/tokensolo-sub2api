@@ -451,6 +451,8 @@ export default {
         badge: '{count} agents · active #{id}',
         badgeNoActive: '{count} agents · none active',
         deleteAccountConfirm: 'Delete "{name}"? This ChatGPT account and all {count} of its agents will be deleted; credentials cannot be recovered.',
+        pausedHint: 'This account is paused in the list; no agent serves traffic. Turn scheduling back on in the list to resume, or "Make active" here to resume with that agent.',
+        badgePaused: '{count} agents · paused',
         standbyToggleHint: 'Standby agents cannot be scheduled directly; use "Make active" in Agents'
       },
       siwcGate: {

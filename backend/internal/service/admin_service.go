@@ -685,6 +685,8 @@ var ErrRPMStatusUnavailable = infraerrors.New(http.StatusNotImplemented, "RPM_ST
 
 // adminServiceImpl implements AdminService
 type adminServiceImpl struct {
+	// siwcAgentPool 可选：SIWC 账号的可调度开关按整个 ChatGPT 账号暂停 / 恢复。
+	siwcAgentPool *SIWCAgentPoolService
 	cfg                  *config.Config
 	userRepo             UserRepository
 	groupRepo            GroupRepository

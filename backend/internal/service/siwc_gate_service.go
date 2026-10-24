@@ -606,6 +606,8 @@ func (s *SIWCGateService) Restore(ctx context.Context, email string) (*SIWCGateS
 	state.ClearedAt = &now
 	state.NextCheckAt = nil
 	restored := make([]int64, 0, len(siblings))
+	// 账号被手动暂停：闸门恢复只清错误，不打开调度
+	accountPaused := siwcGroupPaused(siblings)
 	for i := range siblings {
 		sib := &siblings[i]
 		if err := s.accountRepo.ClearError(ctx, sib.ID); err != nil {
@@ -617,7 +619,7 @@ func (s *SIWCGateService) Restore(ctx context.Context, email string) (*SIWCGateS
 		}
 		// Block 时 SetError 已把 schedulable 置 false，ClearError 不会恢复它；
 		// 只恢复活跃 Agent，待命 Agent 保持不可调度（同一时刻只有一个 Agent 接流量）。
-		if !sib.IsOpenAISIWCStandby() {
+		if !sib.IsOpenAISIWCStandby() && !accountPaused {
 			if err := s.accountRepo.SetSchedulable(ctx, sib.ID, true); err != nil {
 				slog.Warn("siwc_gate.restore_schedulable_failed", "account_id", sib.ID, "error", err)
 			}
