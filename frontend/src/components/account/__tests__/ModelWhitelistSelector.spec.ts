@@ -114,6 +114,18 @@ describe('ModelWhitelistSelector', () => {
     }
   )
 
+  it('hides the static fill button but keeps upstream sync when hideStaticFill is set (SIWC)', () => {
+    const texts = (w: ReturnType<typeof mountSelector>) => w.findAll('button').map(button => button.text())
+    const normal = mountSelector({ platform: 'openai', accountId: 46 })
+    expect(texts(normal)).toContain('admin.accounts.fillRelatedModels')
+    normal.unmount()
+
+    const siwc = mountSelector({ platform: 'openai', accountId: 46, hideStaticFill: true })
+    expect(texts(siwc)).not.toContain('admin.accounts.fillRelatedModels')
+    expect(texts(siwc)).toContain('admin.accounts.syncUpstreamModels')
+    siwc.unmount()
+  })
+
   it.each(['typesafe', 'unregistered'])(
     'hides upstream sync for unsupported %s saved accounts and creation previews',
     (platform) => {

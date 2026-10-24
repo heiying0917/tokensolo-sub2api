@@ -95,6 +95,7 @@
     <!-- Quick Actions -->
     <div class="mb-4 flex flex-wrap gap-2">
       <button
+        v-if="!hideStaticFill"
         type="button"
         @click="fillRelated"
         class="rounded-lg border border-blue-200 px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-900/30"
@@ -165,6 +166,8 @@ const props = defineProps<{
   platform?: string
   platforms?: string[]
   accountId?: number
+  // 隐藏"同步最新支持模型"（平台静态清单）；SIWC 账号的可用模型只认上游同步结果
+  hideStaticFill?: boolean
   syncCredentials?: {
     platform: string
     type: string
