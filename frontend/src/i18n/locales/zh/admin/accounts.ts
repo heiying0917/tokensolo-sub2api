@@ -1451,6 +1451,8 @@ export default {
           siwcManagementLabel: '关联管理凭据（可选）',
           siwcManagementNone: '不关联（按邮箱自动匹配）',
           siwcManagementHint: '选择同邮箱的 Codex OAuth 账号用于查询额度与模型列表；不选时后端按邮箱自动匹配。',
+          siwcManagementAutoMatched: '当前按邮箱自动匹配：#{id} · {name}',
+          siwcManagementNoMatch: '没有同邮箱的可用 Codex OAuth 账号，额度查询与模型同步不可用，请先导入该邮箱的 Codex 账号。',
           siwcManagementLoadFailed: '管理凭据列表加载失败，可先不关联。',
           siwcSubmitAndCreate: '提交并创建账号',
           siwcSubmitting: '正在创建账号…',

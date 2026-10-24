@@ -1766,6 +1766,42 @@
         </div>
       </div>
 
+      <!-- SIWC：管理凭据（同邮箱 Codex OAuth 账号，用于查额度与同步模型） -->
+      <div v-if="isSiwc" data-testid="edit-siwc-management">
+        <label class="input-label">{{ t('admin.accounts.oauth.openai.siwcManagementLabel') }}</label>
+        <select
+          v-model="siwcManagementAccountId"
+          class="input w-full text-sm"
+          :disabled="siwcManagementLoading"
+          data-testid="edit-siwc-management-select"
+        >
+          <option :value="null">{{ t('admin.accounts.oauth.openai.siwcManagementNone') }}</option>
+          <option v-for="option in siwcManagementOptions" :key="option.id" :value="option.id">
+            #{{ option.id }} · {{ option.name }}<template v-if="option.email"> · {{ option.email }}</template>
+          </option>
+        </select>
+        <p
+          v-if="siwcManagementAccountId === null && siwcAutoMatchedOption"
+          class="mt-1 text-xs text-gray-500 dark:text-gray-400"
+          data-testid="edit-siwc-management-auto"
+        >
+          {{ t('admin.accounts.oauth.openai.siwcManagementAutoMatched', { id: siwcAutoMatchedOption.id, name: siwcAutoMatchedOption.name }) }}
+        </p>
+        <p
+          v-else-if="siwcManagementAccountId === null && !siwcManagementLoading && !siwcManagementLoadFailed"
+          class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+          data-testid="edit-siwc-management-missing"
+        >
+          {{ t('admin.accounts.oauth.openai.siwcManagementNoMatch') }}
+        </p>
+        <p v-else class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.oauth.openai.siwcManagementHint') }}
+        </p>
+        <p v-if="siwcManagementLoadFailed" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+          {{ t('admin.accounts.oauth.openai.siwcManagementLoadFailed') }}
+        </p>
+      </div>
+
       <div v-if="!isSparkShadow">
         <div class="mb-1 flex items-center gap-2">
           <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
@@ -3349,6 +3385,70 @@ interface Props {
 const props = defineProps<Props>()
 // SIWC 账号的模型白名单只认上游同步（经管理凭据），隐藏平台静态清单填充
 const isSiwc = computed(() => isSiwcAccount(props.account))
+
+// SIWC 管理凭据：extra.siwc_management_account_id 显式指定，为空时后端按邮箱自动匹配（同邮箱、ID 最小者）
+type SiwcManagementOption = { id: number; name: string; email: string; status: string }
+const siwcManagementAccountId = ref<number | null>(null)
+const siwcManagementOptions = ref<SiwcManagementOption[]>([])
+const siwcManagementLoading = ref(false)
+const siwcManagementLoadFailed = ref(false)
+
+const readSiwcManagementAccountId = (extra: unknown): number | null => {
+  const raw = (extra as Record<string, unknown> | undefined)?.siwc_management_account_id
+  const id = typeof raw === 'string' ? Number(raw.trim()) : raw
+  return typeof id === 'number' && Number.isInteger(id) && id > 0 ? id : null
+}
+
+const siwcAccountEmail = computed(() =>
+  String(props.account?.credentials?.email || '').trim().toLowerCase()
+)
+
+// 与后端自动匹配规则一致：同邮箱、状态 active、ID 最小
+const siwcAutoMatchedOption = computed(() =>
+  siwcManagementOptions.value
+    .filter((option) => option.status === 'active' && option.email.toLowerCase() === siwcAccountEmail.value)
+    .sort((a, b) => a.id - b.id)[0] || null
+)
+
+const loadSiwcManagementOptions = async () => {
+  siwcManagementLoading.value = true
+  siwcManagementLoadFailed.value = false
+  try {
+    const response = await adminAPI.accounts.list(1, 200, { platform: 'openai', type: 'oauth', lite: '1' })
+    const currentId = siwcManagementAccountId.value
+    siwcManagementOptions.value = (response.items || [])
+      .filter((item) => {
+        const authMode = item.credentials?.auth_mode
+        if ((typeof authMode === 'string' && authMode.trim()) || item.parent_account_id != null) return false
+        // 只列同邮箱账号；已显式关联的账号即使邮箱不同也保留，避免选项丢失
+        const email = String(item.credentials?.email || item.extra?.email || '').trim().toLowerCase()
+        return email === siwcAccountEmail.value || item.id === currentId
+      })
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        email: String(item.credentials?.email || item.extra?.email || ''),
+        status: String(item.status || '')
+      }))
+  } catch {
+    siwcManagementLoadFailed.value = true
+    siwcManagementOptions.value = []
+  } finally {
+    siwcManagementLoading.value = false
+  }
+}
+
+watch(
+  () => [props.account?.id, isSiwc.value] as const,
+  () => {
+    siwcManagementAccountId.value = readSiwcManagementAccountId(props.account?.extra)
+    siwcManagementOptions.value = []
+    if (isSiwc.value) {
+      void loadSiwcManagementOptions()
+    }
+  },
+  { immediate: true }
+)
 const emit = defineEmits<{
   close: []
   updated: [account: Account]
@@ -6077,6 +6177,18 @@ const handleSubmit = async () => {
       }
       // Quota notify config
       writeQuotaNotifyToExtra(newExtra, 'update')
+      updatePayload.extra = newExtra
+    }
+
+    // SIWC 管理凭据只在改动时写回 extra
+    if (isSiwc.value && siwcManagementAccountId.value !== readSiwcManagementAccountId(props.account.extra)) {
+      const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
+      const newExtra: Record<string, unknown> = { ...currentExtra }
+      if (siwcManagementAccountId.value !== null) {
+        newExtra.siwc_management_account_id = siwcManagementAccountId.value
+      } else {
+        delete newExtra.siwc_management_account_id
+      }
       updatePayload.extra = newExtra
     }
 

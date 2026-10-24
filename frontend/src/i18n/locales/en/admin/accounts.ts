@@ -1355,6 +1355,8 @@ export default {
           siwcManagementLabel: 'Link a management credential (optional)',
           siwcManagementNone: 'Do not link (auto-match by email)',
           siwcManagementHint: 'Pick a Codex OAuth account with the same email for quota and model-list lookups; left empty, the backend auto-matches by email.',
+          siwcManagementAutoMatched: 'Auto-matched by email: #{id} · {name}',
+          siwcManagementNoMatch: 'No usable Codex OAuth account with the same email; quota and model sync are unavailable until one is imported.',
           siwcManagementLoadFailed: 'Failed to load management credentials, you can continue without linking.',
           siwcSubmitAndCreate: 'Submit & Create Account',
           siwcSubmitting: 'Creating account…',

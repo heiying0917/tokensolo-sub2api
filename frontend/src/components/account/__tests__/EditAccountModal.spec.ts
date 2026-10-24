@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import {
   BUILTIN_PLATFORM_CATALOG,
   resetPlatformCatalog,
   setPlatformCatalog
 } from '@/constants/platformCatalog'
 
-const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
+const { updateAccountMock, checkMixedChannelRiskMock, listAccountsMock, authIsSimpleMode } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
+  listAccountsMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
   authIsSimpleMode: { value: true }
 }))
@@ -33,6 +34,7 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
+      list: listAccountsMock,
       checkMixedChannelRisk: checkMixedChannelRiskMock
     },
     settings: {
@@ -308,6 +310,27 @@ function buildOpenAIOAuthParentAccount() {
   } as any
 }
 
+function buildSiwcAccount(extra: Record<string, unknown> = {}) {
+  return {
+    ...buildAccount(),
+    id: 12,
+    name: 'SIWC 01',
+    type: 'oauth',
+    credentials: { auth_mode: 'siwc', client_id: 'oaiapp_x', email: 'A@b.c', access_token: 'siwc-at' },
+    extra
+  } as any
+}
+
+const SIWC_MANAGEMENT_CANDIDATES = {
+  items: [
+    { id: 9, name: 'codex-a2', status: 'active', credentials: { email: 'a@b.c' }, parent_account_id: null },
+    { id: 3, name: 'codex-a1', status: 'active', credentials: { email: 'a@b.c' }, parent_account_id: null },
+    { id: 4, name: 'codex-other', status: 'active', credentials: { email: 'x@y.z' }, parent_account_id: null },
+    { id: 12, name: 'SIWC 01', status: 'active', credentials: { auth_mode: 'siwc', email: 'a@b.c' }, parent_account_id: null },
+    { id: 5, name: 'pat', status: 'active', credentials: { auth_mode: 'personalAccessToken', email: 'a@b.c' }, parent_account_id: null }
+  ]
+}
+
 function mountModal(account = buildAccount(), renderGroupSelector = false) {
   return mount(EditAccountModal, {
     props: {
@@ -335,6 +358,42 @@ describe('EditAccountModal', () => {
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it('shows the SIWC management credential only for SIWC accounts', async () => {
+    listAccountsMock.mockReset().mockResolvedValue(SIWC_MANAGEMENT_CANDIDATES)
+    const plain = mountModal(buildOpenAIOAuthParentAccount())
+    expect(plain.find('[data-testid="edit-siwc-management"]').exists()).toBe(false)
+    expect(listAccountsMock).not.toHaveBeenCalled()
+
+    const wrapper = mountModal(buildSiwcAccount())
+    await flushPromises()
+    const options = wrapper.findAll('[data-testid="edit-siwc-management-select"] option').map((o) => o.attributes('value'))
+    // 只列同邮箱、非 SIWC / PAT 的 Codex OAuth 账号
+    expect(options.slice(1).sort()).toEqual(['3', '9'])
+    // 未显式指定时展示自动匹配结果（ID 最小者）
+    expect(wrapper.get('[data-testid="edit-siwc-management-auto"]').text()).toContain('siwcManagementAutoMatched')
+  })
+
+  it('writes siwc_management_account_id only when changed', async () => {
+    listAccountsMock.mockReset().mockResolvedValue(SIWC_MANAGEMENT_CANDIDATES)
+    updateAccountMock.mockReset().mockResolvedValue({})
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const unchanged = mountModal(buildSiwcAccount({ siwc_management_account_id: 9 }))
+    await flushPromises()
+    expect((unchanged.get('[data-testid="edit-siwc-management-select"]').element as HTMLSelectElement).value).toBe('9')
+    await unchanged.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.siwc_management_account_id ?? 9).toBe(9)
+
+    updateAccountMock.mockClear()
+    const wrapper = mountModal(buildSiwcAccount({ siwc_management_account_id: 9 }))
+    await flushPromises()
+    await wrapper.get('[data-testid="edit-siwc-management-select"]').setValue('3')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.siwc_management_account_id).toBe(3)
+  })
 
   it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
     const account = buildAccount()
