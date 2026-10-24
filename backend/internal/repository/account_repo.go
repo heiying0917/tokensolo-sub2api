@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -1099,8 +1100,22 @@ func (r *accountRepository) accountListFilteredQuery(platform, accountType, stat
 	return q
 }
 
+// hideSIWCAgentChildrenPredicate 排除挂在主行下的 SIWC 子 Agent（extra.siwc_agent_parent_id > 0）。
+// 仅当调用方在 ctx 上声明（管理端账号列表）时生效，其余调用方看见全部行。
+func hideSIWCAgentChildrenPredicate(ctx context.Context, q *dbent.AccountQuery) *dbent.AccountQuery {
+	if !service.AccountListHidesSIWCAgentChildren(ctx) {
+		return q
+	}
+	return q.Where(dbpredicate.Account(func(s *entsql.Selector) {
+		s.Where(entsql.ExprP(fmt.Sprintf(
+			"COALESCE(NULLIF(%s->>'siwc_agent_parent_id', '')::bigint, 0) = 0",
+			s.C(dbaccount.FieldExtra),
+		)))
+	}))
+}
+
 func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
-	q := r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode)
+	q := hideSIWCAgentChildrenPredicate(ctx, r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode))
 	// Clone before Count so interceptor-appended predicates (SoftDeleteMixin's
 	// deleted_at IS NULL) don't accumulate on the shared builder and pollute the
 	// subsequent list query. Same pattern used in group_repo/promo_code_repo/user_repo
@@ -1130,7 +1145,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 }
 
 func (r *accountRepository) ListAllWithFilters(ctx context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, error) {
-	accounts, err := r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode).All(ctx)
+	accounts, err := hideSIWCAgentChildrenPredicate(ctx, r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode)).All(ctx)
 	if err != nil {
 		return nil, err
 	}

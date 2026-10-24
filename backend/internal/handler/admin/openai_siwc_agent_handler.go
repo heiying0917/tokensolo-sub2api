@@ -135,3 +135,18 @@ func (h *OpenAIOAuthHandler) SIWCReauthFromOAuth(c *gin.Context) {
 	}
 	response.Success(c, dto.AccountFromService(updated))
 }
+
+// SIWCAgentRemove 在 Agent 管理里删除一个 Agent；删主行时下一个 Agent 自动升为主行。
+// POST /api/v1/admin/openai/siwc/accounts/:id/agents/remove
+func (h *OpenAIOAuthHandler) SIWCAgentRemove(c *gin.Context) {
+	pool, accountID, ok := h.requireSIWCAgentPool(c)
+	if !ok {
+		return
+	}
+	group, err := pool.RemoveAgent(c.Request.Context(), accountID, h.adminService.DeleteAccount)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, group)
+}

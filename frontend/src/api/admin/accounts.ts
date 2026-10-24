@@ -61,6 +61,8 @@ export async function list(
     privacy_mode?: string
     lite?: string
     include_scheduler_score?: string
+    // 隐藏 SIWC 子 Agent（账号列表页专用）
+    hide_siwc_agents?: string
     sort_by?: string
     sort_order?: 'asc' | 'desc'
   },
@@ -136,6 +138,8 @@ export async function listWithEtag(
     privacy_mode?: string
     lite?: string
     include_scheduler_score?: string
+    // 隐藏 SIWC 子 Agent（账号列表页专用）
+    hide_siwc_agents?: string
     sort_by?: string
     sort_order?: 'asc' | 'desc'
   },
@@ -850,6 +854,12 @@ export async function activateSiwcAgent(id: number): Promise<SiwcAgentGroup> {
   return data
 }
 
+/** 在 Agent 管理里删除一个 Agent；删主行时下一个 Agent 升为主行。 */
+export async function removeSiwcAgent(id: number): Promise<SiwcAgentGroup> {
+  const { data } = await apiClient.post<SiwcAgentGroup>(`/admin/openai/siwc/accounts/${id}/agents/remove`)
+  return data
+}
+
 /** 用新的 SIWC 授权替换单个 Agent 的凭据（必须登录同一 ChatGPT 账号）。 */
 export async function reauthSiwcFromOAuth(id: number, payload: OpenAISiwcExchangeRequest): Promise<Account> {
   const { data } = await apiClient.post<Account>(`/admin/openai/siwc/accounts/${id}/reauth-from-oauth`, payload, {
@@ -1268,6 +1278,7 @@ export const accountsAPI = {
   getSiwcGate,
   getSiwcAgents,
   activateSiwcAgent,
+  removeSiwcAgent,
   reauthSiwcFromOAuth,
   recheckSiwcGate,
   restoreSiwcGate,

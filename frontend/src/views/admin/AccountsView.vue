@@ -307,12 +307,12 @@
               <button
                 v-if="isSiwcAccount(row)"
                 type="button"
-                :class="['badge text-xs', isSiwcStandby(row) ? 'badge-gray' : 'badge-success']"
+                :class="['badge text-xs', siwcAgentBadgeClass(row)]"
                 :data-testid="`siwc-agent-badge-${row.id}`"
                 :title="t('admin.accounts.siwcAgents.menu')"
                 @click.stop="handleShowSiwcAgents(row)"
               >
-                {{ isSiwcStandby(row) ? t('admin.accounts.siwcAgents.roleStandby') : t('admin.accounts.siwcAgents.roleActive') }}
+                {{ siwcAgentBadgeText(row) }}
               </button>
             </div>
           </template>
@@ -502,7 +502,7 @@
     <TempUnschedStatusModal :show="showTempUnsched" :account="tempUnschedAcc" @close="showTempUnsched = false" @reset="handleTempUnschedReset" />
     <SiwcAgentsModal :show="showSiwcAgents" :account="siwcAgentsAcc" :reauth-account-id="siwcAgentsReauthId" @close="handleCloseSiwcAgents" @changed="load" />
     <SiwcGateModal :show="showSiwcGate" :account="siwcGateAcc" @close="showSiwcGate = false" @updated="handleSiwcGateUpdated" @restored="handleSiwcGateRestored" />
-    <ConfirmDialog :show="showDeleteDialog" :title="t('admin.accounts.deleteAccount')" :message="t('admin.accounts.deleteConfirm', { name: deletingAcc?.name })" :confirm-text="t('common.delete')" :cancel-text="t('common.cancel')" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
+    <ConfirmDialog :show="showDeleteDialog" :title="t('admin.accounts.deleteAccount')" :message="deleteConfirmMessage" :confirm-text="t('common.delete')" :cancel-text="t('common.cancel')" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
     <ConfirmDialog :show="showCreateShadowDialog" :title="t('admin.accounts.createSparkShadow')" :message="t('admin.accounts.createSparkShadowConfirm', { name: creatingShadowAcc?.name })" @confirm="confirmCreateSparkShadow" @cancel="showCreateShadowDialog = false" />
     <ConfirmDialog :show="showExportDataDialog" :title="t('admin.accounts.dataExport')" :message="t('admin.accounts.dataExportConfirmMessage')" :confirm-text="t('admin.accounts.dataExportConfirm')" :cancel-text="t('common.cancel')" @confirm="handleExportData" @cancel="showExportDataDialog = false">
       <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -1149,6 +1149,8 @@ const {
     group: '',
     search: '',
     lite: '1',
+    // 一行 = 一个 ChatGPT 账号：SIWC 子 Agent 收在 Agent 管理里
+    hide_siwc_agents: '1',
     include_scheduler_score: shouldIncludeSchedulerScore() ? '1' : '0',
     sort_by: sortState.sort_by,
     sort_order: sortState.sort_order
@@ -2129,6 +2131,7 @@ const buildBulkEditFilterSnapshot = () => {
     group: typeof rawParams.group === 'string' ? rawParams.group : '',
     search: typeof rawParams.search === 'string' ? rawParams.search : '',
     privacy_mode: typeof rawParams.privacy_mode === 'string' ? rawParams.privacy_mode : '',
+    hide_siwc_agents: '1',
     sort_by: typeof rawParams.sort_by === 'string' ? rawParams.sort_by : '',
     sort_order: sortOrder
   }
@@ -2577,6 +2580,25 @@ const showSiwcAgents = ref(false)
 const siwcAgentsAcc = ref<Account | null>(null)
 const siwcAgentsReauthId = ref<number | null>(null)
 const isSiwcStandby = (a: Account) => isSiwcAccount(a) && a.extra?.siwc_agent_role === 'standby'
+// 主行徽标：「{n} 个 Agent · 活跃 #id」；没有可用活跃 Agent 时提示无活跃
+const siwcAgentBadgeText = (a: Account) => {
+  const summary = a.siwc_agents
+  if (!summary) return isSiwcStandby(a) ? t('admin.accounts.siwcAgents.roleStandby') : t('admin.accounts.siwcAgents.roleActive')
+  if (!summary.active_account_id) return t('admin.accounts.siwcAgents.badgeNoActive', { count: summary.count })
+  return t('admin.accounts.siwcAgents.badge', { count: summary.count, id: summary.active_account_id })
+}
+const siwcAgentBadgeClass = (a: Account) => {
+  const summary = a.siwc_agents
+  if (summary) return summary.active_account_id ? 'badge-success' : 'badge-warning'
+  return isSiwcStandby(a) ? 'badge-gray' : 'badge-success'
+}
+const deleteConfirmMessage = computed(() => {
+  const acc = deletingAcc.value
+  if (acc && isSiwcAccount(acc) && (acc.siwc_agents?.count ?? 1) > 1) {
+    return t('admin.accounts.siwcAgents.deleteAccountConfirm', { name: acc.name, count: acc.siwc_agents?.count ?? 1 })
+  }
+  return t('admin.accounts.deleteConfirm', { name: acc?.name })
+})
 const handleShowSiwcAgents = (a: Account, reauthId: number | null = null) => {
   siwcAgentsAcc.value = a
   siwcAgentsReauthId.value = reauthId

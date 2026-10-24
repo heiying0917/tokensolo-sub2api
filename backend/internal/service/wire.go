@@ -168,6 +168,8 @@ func ProvideSIWCAgentPoolService(
 	tokenRefresh.SetSIWCAgentFailover(svc)
 	rateLimit.SetSIWCAgentFailover(svc)
 	refreshAPI.SetSIWCAgentFailover(svc)
+	// 把功能上线前已存在的同邮箱多行收敛为主 / 从结构（幂等）
+	go svc.NormalizeAll(context.Background())
 	return svc
 }
 

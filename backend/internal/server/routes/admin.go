@@ -470,6 +470,7 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.POST("/siwc/accounts/:id/fingerprint", h.Admin.OpenAIOAuth.SIWCFingerprint)
 		openai.GET("/siwc/accounts/:id/agents", h.Admin.OpenAIOAuth.SIWCAgentsList)
 		openai.POST("/siwc/accounts/:id/agents/activate", h.Admin.OpenAIOAuth.SIWCAgentActivate)
+		openai.POST("/siwc/accounts/:id/agents/remove", h.Admin.OpenAIOAuth.SIWCAgentRemove)
 		openai.POST("/siwc/accounts/:id/reauth-from-oauth", h.Admin.OpenAIOAuth.SIWCReauthFromOAuth)
 		openai.GET("/accounts/:id/quota", h.Admin.OpenAIOAuth.QueryQuota)
 		openai.POST("/accounts/:id/quota/refresh", h.Admin.OpenAIOAuth.RefreshQuota)

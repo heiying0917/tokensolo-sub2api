@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   createOpenAISiwc: vi.fn(),
   generateSiwcAuthUrl: vi.fn(),
   deleteAccount: vi.fn(),
+  removeSiwcAgent: vi.fn(),
   showSuccess: vi.fn(),
   showError: vi.fn()
 }))
@@ -21,7 +22,8 @@ vi.mock('@/api/admin', () => ({
       reauthSiwcFromOAuth: mocks.reauthSiwcFromOAuth,
       createOpenAISiwc: mocks.createOpenAISiwc,
       generateSiwcAuthUrl: mocks.generateSiwcAuthUrl,
-      delete: mocks.deleteAccount
+      delete: mocks.deleteAccount,
+      removeSiwcAgent: mocks.removeSiwcAgent
     }
   }
 }))
@@ -45,12 +47,20 @@ const BaseDialogStub = defineComponent({
   template: '<div v-if="show"><slot /><slot name="footer" /></div>'
 })
 
+// 确认框直接渲染确认按钮，便于触发删除
+const ConfirmDialogStub = defineComponent({
+  props: { show: { type: Boolean, default: false } },
+  emits: ['confirm', 'cancel'],
+  template: '<button v-if="show" data-testid="confirm-delete" @click="$emit(\'confirm\')">ok</button>'
+})
+
 const STATE = 'state_abc'
 const CALLBACK = `http://127.0.0.1:1455/auth/callback?code=ac_1&state=${STATE}&client_id=oaiapp_new`
 
 function group(activeId = 2) {
   return {
     email: 'a@b.c',
+    primary_account_id: 2,
     active_account_id: activeId,
     management_account_id: 1,
     management_account_name: 'codex',
@@ -65,7 +75,7 @@ function group(activeId = 2) {
 function mountModal(props: Record<string, unknown> = {}) {
   return mount(SiwcAgentsModal, {
     props: { show: true, account: { id: 2, proxy_id: null } as any, ...props },
-    global: { stubs: { BaseDialog: BaseDialogStub, ConfirmDialog: true } }
+    global: { stubs: { BaseDialog: BaseDialogStub, ConfirmDialog: ConfirmDialogStub } }
   })
 }
 
@@ -149,5 +159,25 @@ describe('SiwcAgentsModal', () => {
     await w.get('[data-testid="siwc-agents-submit"]').trigger('click')
     await flushPromises()
     expect(mocks.reauthSiwcFromOAuth).toHaveBeenCalledWith(7, { session_id: 'sess_1', callback_url: CALLBACK })
+  })
+
+  it('marks the primary agent and removes agents through the agent-pool endpoint', async () => {
+    const after = group()
+    after.primary_account_id = 7
+    after.agents = after.agents.filter((a) => a.id !== 2)
+    mocks.removeSiwcAgent.mockResolvedValue(after)
+    const w = mountModal()
+    await flushPromises()
+    expect(w.find('[data-testid="siwc-agent-primary-2"]').exists()).toBe(true)
+    expect(w.find('[data-testid="siwc-agent-primary-7"]').exists()).toBe(false)
+
+    await w.get('[data-testid="siwc-agent-delete-2"]').trigger('click')
+    await w.get('[data-testid="confirm-delete"]').trigger('click')
+    await flushPromises()
+    expect(mocks.removeSiwcAgent).toHaveBeenCalledWith(2)
+    expect(mocks.deleteAccount).not.toHaveBeenCalled()
+    expect(w.find('[data-testid="siwc-agent-row-2"]').exists()).toBe(false)
+    expect(w.find('[data-testid="siwc-agent-primary-7"]').exists()).toBe(true)
+    expect(w.emitted('changed')).toBeTruthy()
   })
 })

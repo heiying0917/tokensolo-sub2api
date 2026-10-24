@@ -19,8 +19,10 @@ const (
 	SIWCAgentRoleActive  = "active"
 	SIWCAgentRoleStandby = "standby"
 
-	siwcAgentRoleExtraKey  = "siwc_agent_role"
-	siwcAgentSwitchLockTTL = 15 * time.Second
+	siwcAgentRoleExtraKey = "siwc_agent_role"
+	// siwcAgentParentExtraKey 子 Agent 指向主行 ID；主行写 0。管理端账号列表只显示主行。
+	siwcAgentParentExtraKey = "siwc_agent_parent_id"
+	siwcAgentSwitchLockTTL  = 15 * time.Second
 )
 
 // GetOpenAISIWCAgentRole 返回 SIWC Agent 角色；非 SIWC 账号返回空串。
@@ -32,6 +34,36 @@ func (a *Account) GetOpenAISIWCAgentRole() string {
 		return SIWCAgentRoleStandby
 	}
 	return SIWCAgentRoleActive
+}
+
+// GetOpenAISIWCAgentParentID 返回子 Agent 所属主行 ID；主行或非 SIWC 返回 0。
+func (a *Account) GetOpenAISIWCAgentParentID() int64 {
+	if a == nil || !a.IsOpenAISIWC() || a.Extra == nil {
+		return 0
+	}
+	return extraInt64Value(a.Extra[siwcAgentParentExtraKey])
+}
+
+// IsOpenAISIWCAgentChild 报告账号是否为挂在主行下的子 Agent（列表隐藏）。
+func (a *Account) IsOpenAISIWCAgentChild() bool {
+	return a.GetOpenAISIWCAgentParentID() > 0
+}
+
+type accountListHideSIWCAgentChildrenKey struct{}
+
+// WithAccountListHideSIWCAgentChildren 标记本次账号列表查询隐藏子 Agent。
+// 走 ctx 而不改仓储签名：只有管理端账号列表需要隐藏，导出 / 运维统计 / 额度重置等仍要看见全部行。
+func WithAccountListHideSIWCAgentChildren(ctx context.Context) context.Context {
+	return context.WithValue(ctx, accountListHideSIWCAgentChildrenKey{}, true)
+}
+
+// AccountListHidesSIWCAgentChildren 供仓储读取隐藏标记。
+func AccountListHidesSIWCAgentChildren(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	hide, _ := ctx.Value(accountListHideSIWCAgentChildrenKey{}).(bool)
+	return hide
 }
 
 // IsOpenAISIWCStandby 报告账号是否为待命 SIWC Agent。
@@ -68,6 +100,7 @@ type SIWCAgentView struct {
 // SIWCAgentGroup 是一个 ChatGPT 账号下的全部 Agent。
 type SIWCAgentGroup struct {
 	Email                 string          `json:"email"`
+	PrimaryAccountID      int64           `json:"primary_account_id"`
 	ActiveAccountID       int64           `json:"active_account_id"`
 	ManagementAccountID   int64           `json:"management_account_id"`
 	ManagementAccountName string          `json:"management_account_name,omitempty"`
@@ -105,12 +138,11 @@ func (s *SIWCAgentPoolService) List(ctx context.Context, accountID int64) (*SIWC
 		return nil, err
 	}
 	email := openAIAccountCredentialEmail(account)
-	siblings, err := listOpenAISIWCSiblings(ctx, s.accountRepo, email)
+	siblings, primaryID, err := s.normalizeGroup(ctx, email)
 	if err != nil {
 		return nil, err
 	}
-	sortSIWCAgents(siblings)
-	group := &SIWCAgentGroup{Email: email, Agents: make([]SIWCAgentView, 0, len(siblings))}
+	group := &SIWCAgentGroup{Email: email, PrimaryAccountID: primaryID, Agents: make([]SIWCAgentView, 0, len(siblings))}
 	for i := range siblings {
 		sib := &siblings[i]
 		role := sib.GetOpenAISIWCAgentRole()
@@ -173,6 +205,12 @@ func (s *SIWCAgentPoolService) AssignNewAgentRole(ctx context.Context, account *
 		account = fresh
 	}
 	role := s.RoleForNewAgent(ctx, openAIAccountCredentialEmail(account), account.ID)
+	// 新 Agent 挂到已有主行下（列表只显示主行）
+	defer func() {
+		if _, _, err := s.normalizeGroup(ctx, openAIAccountCredentialEmail(account)); err != nil {
+			slog.Warn("siwc_agent.normalize_after_assign_failed", "account_id", account.ID, "error", err)
+		}
+	}()
 	if role == SIWCAgentRoleStandby {
 		if err := s.setRole(ctx, account.ID, SIWCAgentRoleStandby, false); err != nil {
 			slog.Warn("siwc_agent.assign_standby_failed", "account_id", account.ID, "error", err)
@@ -345,6 +383,241 @@ func (s *SIWCAgentPoolService) recordAudit(actor, action, email string, extra ma
 		StatusCode: http.StatusOK,
 		Extra:      extra,
 	})
+}
+
+// normalizeGroup 收敛同邮箱 Agent 组的主 / 从关系并返回按 ID 排序的成员与主行 ID：
+// 主行 = 现有主行（parent=0）里 ID 最小者，都不是主行时取 ID 最小者；其余行 parent 指向主行。幂等。
+func (s *SIWCAgentPoolService) normalizeGroup(ctx context.Context, email string) ([]Account, int64, error) {
+	siblings, err := listOpenAISIWCSiblings(ctx, s.accountRepo, email)
+	if err != nil {
+		return nil, 0, err
+	}
+	sortSIWCAgents(siblings)
+	if len(siblings) == 0 {
+		return siblings, 0, nil
+	}
+	primaryIdx := 0
+	for i := range siblings {
+		if !siblings[i].IsOpenAISIWCAgentChild() {
+			primaryIdx = i
+			break
+		}
+	}
+	primaryID := siblings[primaryIdx].ID
+	for i := range siblings {
+		sib := &siblings[i]
+		want := primaryID
+		if sib.ID == primaryID {
+			want = 0
+		}
+		_, hasKey := sib.Extra[siwcAgentParentExtraKey]
+		if hasKey && sib.GetOpenAISIWCAgentParentID() == want {
+			continue
+		}
+		if err := s.accountRepo.UpdateExtra(ctx, sib.ID, map[string]any{siwcAgentParentExtraKey: want}); err != nil {
+			return nil, 0, err
+		}
+		if sib.Extra == nil {
+			sib.Extra = map[string]any{}
+		}
+		sib.Extra[siwcAgentParentExtraKey] = want
+	}
+	return siblings, primaryID, nil
+}
+
+// NormalizeAll 启动时把全部 SIWC Agent 组收敛为主 / 从结构（兼容功能上线前已存在的多行）。
+// 写入幂等，多副本同时执行结果一致，无需锁。
+func (s *SIWCAgentPoolService) NormalizeAll(ctx context.Context) {
+	if s == nil || s.accountRepo == nil {
+		return
+	}
+	accounts, err := s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+	if err != nil {
+		slog.Warn("siwc_agent.normalize_all_list_failed", "error", err)
+		return
+	}
+	seen := map[string]struct{}{}
+	for i := range accounts {
+		acc := &accounts[i]
+		if !acc.IsOpenAISIWC() || acc.IsCredentialShadow() {
+			continue
+		}
+		email := openAIAccountCredentialEmail(acc)
+		if email == "" {
+			continue
+		}
+		if _, ok := seen[email]; ok {
+			continue
+		}
+		seen[email] = struct{}{}
+		if _, _, err := s.normalizeGroup(ctx, email); err != nil {
+			slog.Warn("siwc_agent.normalize_group_failed", "email", email, "error", err)
+		}
+	}
+}
+
+// PrimaryOf 返回账号所在 Agent 组的主行 ID（非 SIWC 返回 0）。
+func (s *SIWCAgentPoolService) PrimaryOf(ctx context.Context, account *Account) int64 {
+	if s == nil || account == nil || !account.IsOpenAISIWC() {
+		return 0
+	}
+	if parent := account.GetOpenAISIWCAgentParentID(); parent > 0 {
+		return parent
+	}
+	return account.ID
+}
+
+// ChildrenOf 返回主行下的子 Agent（不含主行本身）。
+func (s *SIWCAgentPoolService) ChildrenOf(ctx context.Context, primary *Account) ([]Account, error) {
+	if s == nil || primary == nil || !primary.IsOpenAISIWC() || primary.IsOpenAISIWCAgentChild() {
+		return nil, nil
+	}
+	siblings, err := listOpenAISIWCSiblings(ctx, s.accountRepo, openAIAccountCredentialEmail(primary))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Account, 0, len(siblings))
+	for i := range siblings {
+		if siblings[i].ID != primary.ID && siblings[i].GetOpenAISIWCAgentParentID() == primary.ID {
+			out = append(out, siblings[i])
+		}
+	}
+	return out, nil
+}
+
+// RemoveAgent 在 Agent 管理里删除一个 Agent：删子 Agent 直接删；删主行时先把下一个 Agent 升为主行，
+// 其余改指向新主行，再删原主行。删的是活跃 Agent 时先切到下一个可用 Agent。
+func (s *SIWCAgentPoolService) RemoveAgent(ctx context.Context, accountID int64, deleteFn func(context.Context, int64) error) (*SIWCAgentGroup, error) {
+	target, err := s.loadSIWC(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	email := openAIAccountCredentialEmail(target)
+	siblings, primaryID, err := s.normalizeGroup(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+	if len(siblings) <= 1 {
+		return nil, infraerrors.New(http.StatusConflict, "SIWC_AGENT_LAST", "cannot remove the last agent; delete the account instead")
+	}
+	var next *Account
+	for i := range siblings {
+		if siblings[i].ID != target.ID {
+			next = &siblings[i]
+			break
+		}
+	}
+	if target.ID == primaryID {
+		for i := range siblings {
+			sib := &siblings[i]
+			if sib.ID == target.ID {
+				continue
+			}
+			want := next.ID
+			if sib.ID == next.ID {
+				want = 0
+			}
+			if err := s.accountRepo.UpdateExtra(ctx, sib.ID, map[string]any{siwcAgentParentExtraKey: want}); err != nil {
+				return nil, err
+			}
+		}
+		// 原主行先降为子行，删除时不会触发主行级联
+		if err := s.accountRepo.UpdateExtra(ctx, target.ID, map[string]any{siwcAgentParentExtraKey: next.ID}); err != nil {
+			return nil, err
+		}
+	}
+	wasActive := target.GetOpenAISIWCAgentRole() == SIWCAgentRoleActive && target.Schedulable
+	if err := deleteFn(ctx, target.ID); err != nil {
+		return nil, err
+	}
+	if wasActive {
+		s.Failover(ctx, target)
+	}
+	return s.List(ctx, next.ID)
+}
+
+// SIWCAgentSummary 是账号列表里 SIWC 主行的 Agent 摘要。
+type SIWCAgentSummary struct {
+	Count           int     `json:"count"`
+	ActiveAccountID int64   `json:"active_account_id"`
+	AgentIDs        []int64 `json:"agent_ids"`
+}
+
+// SummariesFor 为一页账号里的 SIWC 主行汇总 Agent 数与活跃 Agent（一次 ListByPlatform）。
+func (s *SIWCAgentPoolService) SummariesFor(ctx context.Context, accounts []Account) map[int64]*SIWCAgentSummary {
+	if s == nil || s.accountRepo == nil {
+		return nil
+	}
+	primaries := map[int64]struct{}{}
+	for i := range accounts {
+		if accounts[i].IsOpenAISIWC() && !accounts[i].IsOpenAISIWCAgentChild() {
+			primaries[accounts[i].ID] = struct{}{}
+		}
+	}
+	if len(primaries) == 0 {
+		return nil
+	}
+	all, err := s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+	if err != nil {
+		slog.Warn("siwc_agent.summary_list_failed", "error", err)
+		return nil
+	}
+	out := make(map[int64]*SIWCAgentSummary, len(primaries))
+	ensure := func(id int64) *SIWCAgentSummary {
+		if out[id] == nil {
+			out[id] = &SIWCAgentSummary{}
+		}
+		return out[id]
+	}
+	sortSIWCAgents(all)
+	for i := range all {
+		acc := &all[i]
+		if !acc.IsOpenAISIWC() || acc.IsCredentialShadow() {
+			continue
+		}
+		primaryID := acc.ID
+		if parent := acc.GetOpenAISIWCAgentParentID(); parent > 0 {
+			primaryID = parent
+		}
+		if _, ok := primaries[primaryID]; !ok {
+			continue
+		}
+		summary := ensure(primaryID)
+		summary.Count++
+		summary.AgentIDs = append(summary.AgentIDs, acc.ID)
+		if summary.ActiveAccountID == 0 && acc.GetOpenAISIWCAgentRole() == SIWCAgentRoleActive && acc.Schedulable && siwcAgentUsable(acc) {
+			summary.ActiveAccountID = acc.ID
+		}
+	}
+	return out
+}
+
+// ChildrenByPrimary 给定一批账号 ID，返回其中 SIWC 主行 → 子 Agent ID（用于列表用量按主行汇总）。
+func (s *SIWCAgentPoolService) ChildrenByPrimary(ctx context.Context, accountIDs []int64) map[int64][]int64 {
+	if s == nil || s.accountRepo == nil || len(accountIDs) == 0 {
+		return nil
+	}
+	requested := make(map[int64]struct{}, len(accountIDs))
+	for _, id := range accountIDs {
+		requested[id] = struct{}{}
+	}
+	all, err := s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+	if err != nil {
+		slog.Warn("siwc_agent.children_list_failed", "error", err)
+		return nil
+	}
+	out := map[int64][]int64{}
+	for i := range all {
+		acc := &all[i]
+		parent := acc.GetOpenAISIWCAgentParentID()
+		if parent <= 0 {
+			continue
+		}
+		if _, ok := requested[parent]; ok {
+			out[parent] = append(out[parent], acc.ID)
+		}
+	}
+	return out
 }
 
 // ErrSIWCAgentStandbySchedulable 待命 Agent 不允许直接打开调度，须经切换。

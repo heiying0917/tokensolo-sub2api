@@ -447,6 +447,10 @@ export default {
         deleteSuccess: 'Agent deleted',
         deleteFailed: 'Failed to delete agent',
         loadFailed: 'Failed to load agents',
+        primary: 'Primary',
+        badge: '{count} agents · active #{id}',
+        badgeNoActive: '{count} agents · none active',
+        deleteAccountConfirm: 'Delete "{name}"? This ChatGPT account and all {count} of its agents will be deleted; credentials cannot be recovered.',
         standbyToggleHint: 'Standby agents cannot be scheduled directly; use "Make active" in Agents'
       },
       siwcGate: {

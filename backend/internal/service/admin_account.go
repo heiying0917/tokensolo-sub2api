@@ -920,7 +920,65 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if err != nil {
 		return nil, err
 	}
+	// SIWC 主行的账号级设置同步到子 Agent（列表只显示主行，子 Agent 不单独编辑）
+	if err := propagateSIWCAgentSettings(ctx, s.accountRepo, updated); err != nil {
+		return nil, err
+	}
 	return updated, nil
+}
+
+// propagateSIWCAgentSettings 把 SIWC 主行的账号级设置同步到挂在它下面的子 Agent：
+// 分组、代理、优先级、并发、倍率、负载因子、模型白名单 / compact 映射、管理凭据。
+// 凭据与 extra 走 BulkUpdate 的 jsonb || 键级合并，不会覆盖子 Agent 正在轮转的令牌。
+func propagateSIWCAgentSettings(ctx context.Context, repo AccountRepository, primary *Account) error {
+	if primary == nil || !primary.IsOpenAISIWC() || primary.IsOpenAISIWCAgentChild() {
+		return nil
+	}
+	siblings, err := listOpenAISIWCSiblings(ctx, repo, openAIAccountCredentialEmail(primary))
+	if err != nil {
+		return fmt.Errorf("list siwc agents for settings sync: %w", err)
+	}
+	childIDs := make([]int64, 0, len(siblings))
+	for i := range siblings {
+		if siblings[i].ID != primary.ID && siblings[i].GetOpenAISIWCAgentParentID() == primary.ID {
+			childIDs = append(childIDs, siblings[i].ID)
+		}
+	}
+	if len(childIDs) == 0 {
+		return nil
+	}
+	proxyID := int64(0) // 0 = 清除代理
+	if primary.ProxyID != nil {
+		proxyID = *primary.ProxyID
+	}
+	concurrency := primary.Concurrency
+	priority := primary.Priority
+	credentials := map[string]any{}
+	for _, key := range []string{"model_mapping", "compact_model_mapping"} {
+		if value, ok := primary.Credentials[key]; ok && value != nil {
+			credentials[key] = value
+		} else {
+			credentials[key] = map[string]any{} // 主行清空白名单时子 Agent 同步清空
+		}
+	}
+	update := AccountBulkUpdate{
+		ProxyID:        &proxyID,
+		Concurrency:    &concurrency,
+		Priority:       &priority,
+		RateMultiplier: primary.RateMultiplier,
+		LoadFactor:     primary.LoadFactor,
+		Credentials:    credentials,
+		Extra:          map[string]any{openAISIWCManagementAccountExtraKey: primary.GetOpenAISIWCManagementAccountID()},
+	}
+	if _, err := repo.BulkUpdate(ctx, childIDs, update); err != nil {
+		return fmt.Errorf("sync siwc agent settings: %w", err)
+	}
+	for _, childID := range childIDs {
+		if err := repo.BindGroups(ctx, childID, append([]int64{}, primary.GroupIDs...)); err != nil {
+			return fmt.Errorf("sync siwc agent groups %d: %w", childID, err)
+		}
+	}
+	return nil
 }
 
 // UpdateAccountExtra 仅对 Extra JSONB 做 key 级合并，避免覆盖其它运行态键
@@ -1199,6 +1257,13 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 			}
 		}
 
+		// SIWC 主行：批量改动同步到其子 Agent（best-effort，失败只记日志）
+		if primary, getErr := s.accountRepo.GetByID(ctx, accountID); getErr == nil && primary != nil {
+			if syncErr := propagateSIWCAgentSettings(ctx, s.accountRepo, primary); syncErr != nil {
+				slog.Warn("bulk_update.siwc_agent_sync_failed", "account_id", accountID, "error", syncErr)
+			}
+		}
+
 		entry.Success = true
 		result.Success++
 		result.SuccessIDs = append(result.SuccessIDs, accountID)
@@ -1283,6 +1348,20 @@ func (s *adminServiceImpl) resolveBulkUpdateTargetIDs(ctx context.Context, filte
 }
 
 func (s *adminServiceImpl) DeleteAccount(ctx context.Context, id int64) error {
+	// SIWC 主行代表整个 ChatGPT 账号：连同子 Agent 一起删
+	if account, err := s.accountRepo.GetByID(ctx, id); err == nil && account != nil && account.IsOpenAISIWC() && !account.IsOpenAISIWCAgentChild() {
+		siblings, listErr := listOpenAISIWCSiblings(ctx, s.accountRepo, openAIAccountCredentialEmail(account))
+		if listErr != nil {
+			return fmt.Errorf("list siwc agents for cascade delete: %w", listErr)
+		}
+		for i := range siblings {
+			if siblings[i].ID != id && siblings[i].GetOpenAISIWCAgentParentID() == id {
+				if err := s.accountRepo.Delete(ctx, siblings[i].ID); err != nil {
+					return fmt.Errorf("cascade delete siwc agent %d: %w", siblings[i].ID, err)
+				}
+			}
+		}
+	}
 	// 级联删除 spark 影子账号（先删影子，再删母账号）
 	shadows, err := s.accountRepo.ListShadowsByParent(ctx, id)
 	if err != nil {

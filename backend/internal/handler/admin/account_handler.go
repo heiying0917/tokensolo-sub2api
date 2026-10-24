@@ -223,6 +223,8 @@ type AccountWithConcurrency struct {
 	CurrentWindowCost *float64 `json:"current_window_cost,omitempty"` // 当前窗口费用
 	ActiveSessions    *int     `json:"active_sessions,omitempty"`     // 当前活跃会话数
 	CurrentRPM        *int     `json:"current_rpm,omitempty"`         // 当前分钟 RPM 计数
+	// SIWCAgents 仅 SIWC 主行返回：同一 ChatGPT 账号下的 Agent 摘要
+	SIWCAgents *service.SIWCAgentSummary `json:"siwc_agents,omitempty"`
 }
 
 // AccountListItemWithConcurrency is the compact account-list envelope used
@@ -236,6 +238,7 @@ type AccountListItemWithConcurrency struct {
 	CurrentWindowCost  *float64                     `json:"current_window_cost,omitempty"`
 	ActiveSessions     *int                         `json:"active_sessions,omitempty"`
 	CurrentRPM         *int                         `json:"current_rpm,omitempty"`
+	SIWCAgents         *service.SIWCAgentSummary    `json:"siwc_agents,omitempty"`
 }
 
 type simpleModeGroupReference struct {
@@ -692,7 +695,12 @@ func (h *AccountHandler) List(c *gin.Context) {
 		}
 	}
 
-	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, sortBy, sortOrder)
+	listCtx := c.Request.Context()
+	// 账号列表页隐藏 SIWC 子 Agent：一行 = 一个 ChatGPT 账号，Agent 收在 Agent 管理里
+	if parseBoolQueryWithDefault(c.Query("hide_siwc_agents"), false) {
+		listCtx = service.WithAccountListHideSIWCAgentChildren(listCtx)
+	}
+	accounts, total, err := h.adminService.ListAccounts(listCtx, page, pageSize, platform, accountType, status, search, groupID, privacyMode, sortBy, sortOrder)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -857,6 +865,13 @@ func (h *AccountHandler) List(c *gin.Context) {
 	}
 
 	h.enrichShadowParents(c.Request.Context(), result)
+	if summaries := h.siwcAgentPool.SummariesFor(c.Request.Context(), accounts); len(summaries) > 0 {
+		for i := range result {
+			if summary, ok := summaries[result[i].ID]; ok {
+				result[i].SIWCAgents = summary
+			}
+		}
+	}
 
 	if lite {
 		compact := make([]AccountListItemWithConcurrency, len(result))
@@ -870,6 +885,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 				CurrentWindowCost:  item.CurrentWindowCost,
 				ActiveSessions:     item.ActiveSessions,
 				CurrentRPM:         item.CurrentRPM,
+				SIWCAgents:         item.SIWCAgents,
 			}
 		}
 		etag := buildAccountsListETag(compact, total, page, pageSize, platform, accountType, status, search, true)
@@ -2750,11 +2766,22 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 		return
 	}
 
-	stats, err := h.accountUsageService.GetTodayStatsBatch(c.Request.Context(), accountIDs)
+	// SIWC 主行代表整个 ChatGPT 账号：把子 Agent 的今日用量一并查出并累加到主行
+	children := h.siwcAgentPool.ChildrenByPrimary(c.Request.Context(), accountIDs)
+	queryIDs := accountIDs
+	if len(children) > 0 {
+		queryIDs = append([]int64{}, accountIDs...)
+		for _, childIDs := range children {
+			queryIDs = append(queryIDs, childIDs...)
+		}
+		queryIDs = normalizeInt64IDList(queryIDs)
+	}
+	stats, err := h.accountUsageService.GetTodayStatsBatch(c.Request.Context(), queryIDs)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
+	stats = mergeSIWCAgentTodayStats(stats, accountIDs, children)
 
 	payload := gin.H{"stats": stats}
 	cached := accountTodayStatsBatchCache.Set(cacheKey, payload)
@@ -2764,6 +2791,38 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 	}
 	c.Header("X-Snapshot-Cache", "miss")
 	response.Success(c, payload)
+}
+
+// mergeSIWCAgentTodayStats 把子 Agent 的今日用量累加到主行，并只返回请求的账号。
+func mergeSIWCAgentTodayStats(stats map[int64]*service.WindowStats, requested []int64, children map[int64][]int64) map[int64]*service.WindowStats {
+	if len(children) == 0 {
+		return stats
+	}
+	out := make(map[int64]*service.WindowStats, len(requested))
+	for _, id := range requested {
+		var merged *service.WindowStats
+		add := func(src *service.WindowStats) {
+			if src == nil {
+				return
+			}
+			if merged == nil {
+				merged = &service.WindowStats{}
+			}
+			merged.Requests += src.Requests
+			merged.Tokens += src.Tokens
+			merged.Cost += src.Cost
+			merged.StandardCost += src.StandardCost
+			merged.UserCost += src.UserCost
+		}
+		add(stats[id])
+		for _, childID := range children[id] {
+			add(stats[childID])
+		}
+		if merged != nil {
+			out[id] = merged
+		}
+	}
+	return out
 }
 
 // GetBatchUsage 批量获取多个账号的 current usage。

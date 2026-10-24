@@ -1371,6 +1371,8 @@ export interface Account {
   parent_email?: string
   parent_plan_type?: string
   parent_privacy_mode?: string
+  // SIWC 主行：同一 ChatGPT 账号下的 Agent 摘要（子 Agent 不在列表中出现）
+  siwc_agents?: SiwcAgentSummary
   parent_subscription_expires_at?: string
   parent_chatgpt_account_id?: string
 }
@@ -1784,6 +1786,12 @@ export interface OpenAISiwcCreateRequest {
   inherit_from_account_id?: number | null
 }
 
+export interface SiwcAgentSummary {
+  count: number
+  active_account_id: number
+  agent_ids: number[]
+}
+
 /** SIWC Agent 角色：同一 ChatGPT 账号同一时刻只有一个 active 接流量。 */
 export type SiwcAgentRole = 'active' | 'standby'
 
@@ -1803,6 +1811,7 @@ export interface SiwcAgentView {
 
 export interface SiwcAgentGroup {
   email: string
+  primary_account_id: number
   active_account_id: number
   management_account_id: number
   management_account_name?: string

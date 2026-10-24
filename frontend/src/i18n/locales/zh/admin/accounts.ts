@@ -495,6 +495,10 @@ export default {
         deleteSuccess: 'Agent 已删除',
         deleteFailed: '删除 Agent 失败',
         loadFailed: '加载 Agent 列表失败',
+        primary: '主',
+        badge: '{count} 个 Agent · 活跃 #{id}',
+        badgeNoActive: '{count} 个 Agent · 无活跃',
+        deleteAccountConfirm: '确定删除「{name}」？这是一个 ChatGPT 账号，将连同其全部 {count} 个 Agent 一起删除，凭据不可恢复。',
         standbyToggleHint: '待命 Agent 不能直接开启调度，请在 Agent 管理中「设为活跃」'
       },
       siwcGate: {

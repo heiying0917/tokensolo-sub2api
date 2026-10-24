@@ -40,7 +40,14 @@
             <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
               <tr v-for="agent in group.agents" :key="agent.id" :data-testid="`siwc-agent-row-${agent.id}`">
                 <td class="px-3 py-2">
-                  <div class="font-medium text-gray-900 dark:text-gray-100">#{{ agent.id }} · {{ agent.name }}</div>
+                  <div class="font-medium text-gray-900 dark:text-gray-100">
+                    #{{ agent.id }} · {{ agent.name }}
+                    <span
+                      v-if="agent.id === group.primary_account_id"
+                      class="badge badge-gray ml-1 text-[10px]"
+                      :data-testid="`siwc-agent-primary-${agent.id}`"
+                    >{{ t('admin.accounts.siwcAgents.primary') }}</span>
+                  </div>
                   <div v-if="agent.agent_name" class="text-xs text-gray-500 dark:text-gray-400">{{ agent.agent_name }}</div>
                 </td>
                 <td class="px-3 py-2">
@@ -346,19 +353,11 @@ const confirmDelete = async () => {
   if (!target) return
   busy.value = true
   try {
-    await adminAPI.accounts.delete(target.id)
+    // 后端负责：删主行时下一个 Agent 升为主行、删活跃 Agent 时切到下一个可用 Agent
+    group.value = await adminAPI.accounts.removeSiwcAgent(target.id)
+    anchorId.value = group.value.primary_account_id || group.value.agents[0]?.id || null
     appStore.showSuccess(t('admin.accounts.siwcAgents.deleteSuccess'))
     emit('changed')
-    // 删的是锚点账号：换到剩余的第一个 Agent 继续管理
-    if (target.id === anchorId.value) {
-      const rest = group.value?.agents.filter((a) => a.id !== target.id) || []
-      if (rest.length === 0) {
-        handleClose()
-        return
-      }
-      anchorId.value = rest[0].id
-    }
-    await load()
   } catch (err) {
     showError(err, 'admin.accounts.siwcAgents.deleteFailed')
   } finally {
