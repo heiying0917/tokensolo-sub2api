@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tidwall/gjson"
 	"strconv"
 	"strings"
 )
@@ -146,17 +147,36 @@ func isOpenAISIWCServableModel(requestedModel string) bool {
 	return false
 }
 
-// filterOpenAISIWCUpstreamModels 过滤管理凭据 codex/models 清单里 SIWC 上游明确拒绝的模型。
-// 清单与 SIWC 实测基本一致，只有 gpt-5.5 家族在 Codex 侧可见、SIWC 侧被拒（cpa 用全局规则排除同一批）。
-func filterOpenAISIWCUpstreamModels(models []string) []string {
+// filterOpenAISIWCUpstreamModels 过滤管理凭据 codex/models 清单里 SIWC 不应暴露的模型：
+//   - visibility=hide 的内部模型（gpt-reserve、codex-auto-review 等），同 cpa model_sync；
+//   - gpt-5.5 家族：部分 client_version 下 Codex 侧可见，但 SIWC 上游明确拒绝。
+func filterOpenAISIWCUpstreamModels(models []string, hidden map[string]struct{}) []string {
 	out := make([]string, 0, len(models))
 	for _, model := range models {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-5.5") {
+		normalized := strings.ToLower(strings.TrimSpace(model))
+		if strings.HasPrefix(normalized, "gpt-5.5") {
+			continue
+		}
+		if _, ok := hidden[normalized]; ok {
 			continue
 		}
 		out = append(out, model)
 	}
 	return out
+}
+
+// hiddenCodexManifestSlugs 取 codex/models 响应中 visibility=hide 的 slug（小写）。
+func hiddenCodexManifestSlugs(body []byte) map[string]struct{} {
+	hidden := make(map[string]struct{})
+	gjson.GetBytes(body, "models").ForEach(func(_, entry gjson.Result) bool {
+		if strings.EqualFold(entry.Get("visibility").String(), "hide") {
+			if slug := strings.ToLower(strings.TrimSpace(entry.Get("slug").String())); slug != "" {
+				hidden[slug] = struct{}{}
+			}
+		}
+		return true
+	})
+	return hidden
 }
 
 // isOpenAISIWCManagementCandidate 判断账号能否充当 SIWC 的管理凭据：

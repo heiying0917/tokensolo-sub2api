@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// SIWC 账号同步上游模型：借同邮箱 Codex 管理凭据拉 codex/models，并过滤 SIWC 拒绝的 gpt-5.5 家族。
+// SIWC 账号同步上游模型：借同邮箱 Codex 管理凭据拉 codex/models，并过滤隐藏模型与 SIWC 拒绝的 gpt-5.5 家族。
 func TestSyncUpstreamModelCatalog_SIWCUsesManagementCredential(t *testing.T) {
 	siwc := siwcTestAccount(21, "a@b.c")
 	mgmt := codexTestAccount(22, "a@b.c")
@@ -20,7 +20,7 @@ func TestSyncUpstreamModelCatalog_SIWCUsesManagementCredential(t *testing.T) {
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body: io.NopCloser(strings.NewReader(
-			`{"models":[{"slug":"gpt-6-astra"},{"slug":"gpt-5.5"},{"slug":"gpt-5.5-codex"},{"slug":"gpt-6-luna"}]}`)),
+			`{"models":[{"slug":"gpt-6-astra","visibility":"list"},{"slug":"gpt-5.5"},{"slug":"gpt-5.5-codex"},{"slug":"gpt-reserve","visibility":"hide"},{"slug":"codex-auto-review","visibility":"hide"},{"slug":"gpt-6-luna","visibility":"list"}]}`)),
 	}}
 	svc := &AccountTestService{
 		httpUpstream: upstream,

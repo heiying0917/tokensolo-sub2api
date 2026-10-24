@@ -785,7 +785,7 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 		return nil, nil, newUpstreamModelSyncUpstreamError("Upstream model list response was not valid JSON", err)
 	}
 	if account.IsOpenAISIWC() {
-		models = filterOpenAISIWCUpstreamModels(models)
+		models = filterOpenAISIWCUpstreamModels(models, hiddenCodexManifestSlugs(body))
 	}
 	if len(models) == 0 {
 		return nil, nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
