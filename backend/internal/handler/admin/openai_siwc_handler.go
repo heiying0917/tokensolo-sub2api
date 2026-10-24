@@ -1,11 +1,15 @@
 package admin
 
 import (
+	"context"
+	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -113,6 +117,8 @@ type OpenAISIWCCreateRequest struct {
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"`
 	// ManagementAccountID 显式指定同邮箱的 Codex OAuth 账号作管理凭据；为空则按邮箱自动匹配。
 	ManagementAccountID *int64 `json:"management_account_id"`
+	// InheritFromAccountID 从同邮箱已有 SIWC Agent 继承分组、代理、优先级、模型白名单等设置（添加 Agent 用）。
+	InheritFromAccountID *int64 `json:"inherit_from_account_id"`
 }
 
 // SIWCCreateAccountFromOAuth 一步式：换码并直接创建 SIWC 账号
@@ -148,6 +154,17 @@ func (h *OpenAIOAuthHandler) SIWCCreateAccountFromOAuth(c *gin.Context) {
 		return
 	}
 
+	var inheritFrom *service.Account
+	if req.InheritFromAccountID != nil && *req.InheritFromAccountID > 0 {
+		source, srcErr := h.adminService.GetAccount(c.Request.Context(), *req.InheritFromAccountID)
+		if srcErr != nil || source == nil || !source.IsOpenAISIWC() {
+			response.BadRequest(c, "inherit_from_account_id must be an existing siwc account")
+			return
+		}
+		inheritFrom = source
+		applySIWCAgentInheritance(&req, source)
+	}
+
 	tokenInfo, err := h.siwcOAuthService.ExchangeCallback(c.Request.Context(), &service.OpenAISIWCExchangeInput{
 		SessionID:   req.SessionID,
 		CallbackURL: req.resolveCallbackURL(),
@@ -155,6 +172,11 @@ func (h *OpenAIOAuthHandler) SIWCCreateAccountFromOAuth(c *gin.Context) {
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
+		return
+	}
+	if inheritFrom != nil && !strings.EqualFold(strings.TrimSpace(tokenInfo.Email), strings.TrimSpace(inheritFrom.GetCredential("email"))) {
+		response.ErrorFrom(c, infraerrors.New(http.StatusBadRequest, "SIWC_AGENT_EMAIL_MISMATCH",
+			"authorized ChatGPT account email does not match this account; sign in with "+inheritFrom.GetCredential("email")))
 		return
 	}
 
@@ -166,8 +188,25 @@ func (h *OpenAIOAuthHandler) SIWCCreateAccountFromOAuth(c *gin.Context) {
 	if req.ManagementAccountID != nil && *req.ManagementAccountID > 0 {
 		managementAccountID = *req.ManagementAccountID
 	}
+	if inheritFrom != nil {
+		// 模型白名单 / compact 映射 / UA 属于账号配置，随 Agent 继承
+		for _, key := range []string{"model_mapping", "compact_model_mapping", "user_agent"} {
+			if _, exists := credentials[key]; !exists {
+				if value, ok := inheritFrom.Credentials[key]; ok && value != nil {
+					credentials[key] = value
+				}
+			}
+		}
+		if managementAccountID == 0 {
+			managementAccountID = inheritFrom.GetOpenAISIWCManagementAccountID()
+		}
+	}
 	extra := mergeCodexImportMap(req.Extra, service.BuildOpenAISIWCAccountExtra(managementAccountID))
 	extra["imported_at"] = time.Now().UTC().Format(time.RFC3339)
+	accountName := buildOpenAISIWCAccountName(req.Name, tokenInfo)
+	if inheritFrom != nil && strings.TrimSpace(req.Name) == "" {
+		accountName = h.nextSIWCAgentName(c.Request.Context(), inheritFrom)
+	}
 
 	concurrency := 3
 	if req.Concurrency != nil {
@@ -183,7 +222,7 @@ func (h *OpenAIOAuthHandler) SIWCCreateAccountFromOAuth(c *gin.Context) {
 	}
 
 	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
-		Name:                  buildOpenAISIWCAccountName(req.Name, tokenInfo),
+		Name:                  accountName,
 		Notes:                 req.Notes,
 		Platform:              service.PlatformOpenAI,
 		Type:                  service.AccountTypeOAuth,
@@ -204,7 +243,61 @@ func (h *OpenAIOAuthHandler) SIWCCreateAccountFromOAuth(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	// 同邮箱已有活跃 Agent 时新 Agent 作待命
+	h.siwcAgentPool.AssignNewAgentRole(c.Request.Context(), account)
+	if refreshed, getErr := h.adminService.GetAccount(c.Request.Context(), account.ID); getErr == nil && refreshed != nil {
+		account = refreshed
+	}
 	response.Success(c, dto.AccountFromService(account))
+}
+
+// applySIWCAgentInheritance 用来源 Agent 的设置补齐请求中未显式给出的字段。
+func applySIWCAgentInheritance(req *OpenAISIWCCreateRequest, source *service.Account) {
+	if req.ProxyID == nil && source.ProxyID != nil {
+		proxyID := *source.ProxyID
+		req.ProxyID = &proxyID
+	}
+	if req.GroupIDs == nil {
+		req.GroupIDs = append([]int64{}, source.GroupIDs...)
+		skip := true
+		req.SkipDefaultGroupBind = &skip
+	}
+	if req.Concurrency == nil {
+		concurrency := source.Concurrency
+		req.Concurrency = &concurrency
+	}
+	if req.Priority == nil {
+		priority := source.Priority
+		req.Priority = &priority
+	}
+	if req.RateMultiplier == nil && source.RateMultiplier != nil {
+		rate := *source.RateMultiplier
+		req.RateMultiplier = &rate
+	}
+	if req.LoadFactor == nil && source.LoadFactor != nil {
+		load := *source.LoadFactor
+		req.LoadFactor = &load
+	}
+	if req.ExpiresAt == nil && source.ExpiresAt != nil {
+		expires := source.ExpiresAt.Unix()
+		req.ExpiresAt = &expires
+	}
+	if req.AutoPauseOnExpired == nil {
+		autoPause := source.AutoPauseOnExpired
+		req.AutoPauseOnExpired = &autoPause
+	}
+}
+
+// nextSIWCAgentName 生成「<邮箱> Agent #n」，n 为组内 Agent 数 + 1。
+func (h *OpenAIOAuthHandler) nextSIWCAgentName(ctx context.Context, source *service.Account) string {
+	email := strings.TrimSpace(source.GetCredential("email"))
+	count := 1
+	if h.siwcAgentPool != nil {
+		if group, err := h.siwcAgentPool.List(ctx, source.ID); err == nil && group != nil {
+			count = len(group.Agents)
+		}
+	}
+	return fmt.Sprintf("%s Agent #%d", email, count+1)
 }
 
 // buildOpenAISIWCAccountName 账号名缺省取邮箱，并带上 agent 名以区分同邮箱多份凭据。

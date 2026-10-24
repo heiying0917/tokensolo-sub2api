@@ -60,16 +60,18 @@ type GrokOAuthRefreshMutationRepository interface {
 // TokenRefreshService OAuth token自动刷新服务
 // 定期检查并刷新即将过期的token
 type TokenRefreshService struct {
-	accountRepo      AccountRepository
-	candidatePager   OAuthRefreshCandidatePager
-	registrations    []tokenRefreshRegistration
-	refreshPolicy    BackgroundRefreshPolicy
-	cfg              *config.TokenRefreshConfig
-	cacheInvalidator TokenCacheInvalidator
-	schedulerCache   SchedulerCache   // 用于同步更新调度器缓存，解决 token 刷新后缓存不一致问题
-	tempUnschedCache TempUnschedCache // 用于清除 Redis 中的临时不可调度缓存
-	refreshAPI       *OAuthRefreshAPI // 统一刷新 API
-	runtimeBlocker   AccountRuntimeBlocker
+	// siwcAgentFailover 活跃 SIWC Agent 凭据失效后切到待命 Agent（可选）。
+	siwcAgentFailover siwcAgentFailoverer
+	accountRepo       AccountRepository
+	candidatePager    OAuthRefreshCandidatePager
+	registrations     []tokenRefreshRegistration
+	refreshPolicy     BackgroundRefreshPolicy
+	cfg               *config.TokenRefreshConfig
+	cacheInvalidator  TokenCacheInvalidator
+	schedulerCache    SchedulerCache   // 用于同步更新调度器缓存，解决 token 刷新后缓存不一致问题
+	tempUnschedCache  TempUnschedCache // 用于清除 Redis 中的临时不可调度缓存
+	refreshAPI        *OAuthRefreshAPI // 统一刷新 API
+	runtimeBlocker    AccountRuntimeBlocker
 
 	// 多副本下每个周期只让一个实例扫描全表；账号级 Redis 刷新锁仍是最终兜底。
 	leaderLockCache LeaderLockCache
@@ -187,6 +189,13 @@ func (s *TokenRefreshService) SetPrivacyDeps(factory PrivacyClientFactory, proxy
 func (s *TokenRefreshService) SetLeaderLock(cache LeaderLockCache, db *sql.DB) {
 	s.leaderLockCache = cache
 	s.leaderLockDB = db
+}
+
+// SetSIWCAgentFailover 注入 SIWC Agent 故障转移（可选依赖）。
+func (s *TokenRefreshService) SetSIWCAgentFailover(f siwcAgentFailoverer) {
+	if s != nil {
+		s.siwcAgentFailover = f
+	}
 }
 
 // SetOpenAISIWCOAuthService 把 OpenAI 平台的刷新器换成"标准 + SIWC"组合刷新器。
@@ -1060,6 +1069,9 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 			} else {
 				setErr = s.accountRepo.SetError(ctx, account.ID, errorMsg)
 				persistentlyBlocked = setErr == nil
+				if persistentlyBlocked && account.IsOpenAISIWC() && s.siwcAgentFailover != nil {
+					s.siwcAgentFailover.Failover(ctx, account)
+				}
 			}
 			if setErr != nil {
 				slog.Error("token_refresh.set_error_status_failed",

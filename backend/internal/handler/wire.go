@@ -53,11 +53,14 @@ func ProvideAdminHandlers(
 	claudeResetCredits *service.ClaudeResetCreditService,
 	openAITokenProvider *service.OpenAITokenProvider,
 	siwcGate *service.SIWCGateService,
+	siwcAgentPool *service.SIWCAgentPoolService,
 ) *AdminHandlers {
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetOpenAITokenProvider(openAITokenProvider)
 	openaiOAuthHandler.SetOpenAITokenProvider(openAITokenProvider)
 	openaiOAuthHandler.SetSIWCGateService(siwcGate)
+	openaiOAuthHandler.SetSIWCAgentPoolService(siwcAgentPool)
+	accountHandler.SetSIWCAgentPoolService(siwcAgentPool)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
 	accountHandler.SetOpenCodeGoUsageService(opencodeGoUsage)
 	accountHandler.SetClaudeResetCreditService(claudeResetCredits)

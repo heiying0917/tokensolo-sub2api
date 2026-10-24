@@ -20,6 +20,8 @@ import (
 
 // RateLimitService 处理限流和过载状态管理
 type RateLimitService struct {
+	// siwcAgentFailover 活跃 SIWC Agent 认证失效被置错后切到待命 Agent（可选）。
+	siwcAgentFailover     siwcAgentFailoverer
 	accountRepo           AccountRepository
 	usageRepo             UsageLogRepository
 	cfg                   *config.Config
@@ -132,6 +134,13 @@ func (s *RateLimitService) SetSettingService(settingService *SettingService) {
 // openAISIWCUnauthorizedRecoverer 由 OpenAITokenProvider 实现。
 type openAISIWCUnauthorizedRecoverer interface {
 	RecoverAfterUnauthorized(ctx context.Context, account *Account, rejectedAccessToken string) (bool, error)
+}
+
+// SetSIWCAgentFailover 注入 SIWC Agent 故障转移（可选依赖）。
+func (s *RateLimitService) SetSIWCAgentFailover(f siwcAgentFailoverer) {
+	if s != nil {
+		s.siwcAgentFailover = f
+	}
 }
 
 // SetOpenAISIWCUnauthorizedRecoverer 注入 SIWC 401 即时恢复器（可选依赖）。
@@ -497,6 +506,12 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			recovered, recoverErr := s.siwcUnauthorizedRecoverer.RecoverAfterUnauthorized(ctx, authAccount, authAccount.GetCredential("access_token"))
 			if recoverErr != nil {
 				slog.Warn("siwc_401_recover_failed", "account_id", authAccount.ID, "error", recoverErr)
+				// refresh_token 已被轮转 / 吊销：凭据确定死亡，直接置错并触发 Agent 故障转移
+				if isNonRetryableRefreshError(recoverErr) {
+					s.handleAuthError(ctx, authAccount, "SIWC 401 and refresh failed (non-retryable): "+recoverErr.Error())
+					shouldDisable = true
+					break
+				}
 			} else if recovered {
 				slog.Info("siwc_401_recovered", "account_id", authAccount.ID)
 				shouldDisable = true
@@ -1007,6 +1022,9 @@ func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account
 		return
 	}
 	slog.Warn("account_disabled_auth_error", "account_id", account.ID, "error", errorMsg)
+	if account.IsOpenAISIWC() && s.siwcAgentFailover != nil {
+		s.siwcAgentFailover.Failover(ctx, account)
+	}
 }
 
 func buildForbiddenErrorMessage(prefix string, upstreamMsg string, responseBody []byte, fallback string) string {

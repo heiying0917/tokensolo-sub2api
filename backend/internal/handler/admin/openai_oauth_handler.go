@@ -26,6 +26,14 @@ type OpenAIOAuthHandler struct {
 	rateLimitService   openAIAccountStateRecoverer
 	tokenProvider      openAISIWCForceRefresher
 	siwcGate           *service.SIWCGateService
+	siwcAgentPool      *service.SIWCAgentPoolService
+}
+
+// SetSIWCAgentPoolService 注入 SIWC 多 Agent 池。
+func (h *OpenAIOAuthHandler) SetSIWCAgentPoolService(pool *service.SIWCAgentPoolService) {
+	if pool != nil {
+		h.siwcAgentPool = pool
+	}
 }
 
 // SetSIWCGateService 注入 SIWC 资格闸门服务。

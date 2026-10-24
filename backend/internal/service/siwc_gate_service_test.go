@@ -35,6 +35,7 @@ func (r *siwcGateRepoStub) SetError(_ context.Context, id int64, _ string) error
 	r.setErrorIDs = append(r.setErrorIDs, id)
 	if acc, ok := r.accountsByID[id]; ok {
 		acc.Status = StatusError
+		acc.Schedulable = false
 	}
 	return nil
 }
@@ -65,6 +66,14 @@ func (r *siwcGateRepoStub) UpdateExtra(_ context.Context, id int64, updates map[
 		if acc != nil {
 			acc.Extra[k] = v
 		}
+	}
+	return nil
+}
+
+// SetSchedulable 写回内存账号，供 Agent 切换 / 闸门恢复断言。SetError 同步置 false（与真实仓储一致）。
+func (r *siwcGateRepoStub) SetSchedulable(_ context.Context, id int64, schedulable bool) error {
+	if acc, ok := r.accountsByID[id]; ok {
+		acc.Schedulable = schedulable
 	}
 	return nil
 }
@@ -374,6 +383,32 @@ func TestRateLimitService_RecoverAccountStateRespectsSIWCGate(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "eligibility gate")
 	require.Empty(t, repo.clearErrorIDs)
+}
+
+func TestSIWCGate_RestoreReenablesOnlyActiveAgent(t *testing.T) {
+	active := siwcTestAccount(1, "a@x.com")
+	active.Schedulable = true
+	standby := siwcTestAccount(2, "a@x.com")
+	standby.Extra = map[string]any{siwcAgentRoleExtraKey: SIWCAgentRoleStandby}
+	repo := newSIWCGateRepoStub(active, standby)
+	probe := &siwcProbeStub{}
+	gate, _ := newGateForTest(repo, probe)
+
+	_, err := gate.Block(context.Background(), repo.accountsByID[1], SIWCGateCodeNotEligible, "r")
+	require.NoError(t, err)
+	require.False(t, repo.accountsByID[1].Schedulable)
+
+	probe.results = []*SIWCProbeResult{
+		{Status: 200},
+		{Status: 200, HasReasoning: true, ReasoningTokens: 18}, {Status: 200, HasReasoning: true, ReasoningTokens: 19}, {Status: 200, HasReasoning: true, ReasoningTokens: 18},
+		{Status: 200, HasReasoning: true, ReasoningTokens: 32}, {Status: 200, HasReasoning: true, ReasoningTokens: 31}, {Status: 200, HasReasoning: true, ReasoningTokens: 33},
+	}
+	_, err = gate.Recheck(context.Background(), "a@x.com", false)
+	require.NoError(t, err)
+	_, err = gate.Restore(context.Background(), "a@x.com")
+	require.NoError(t, err)
+	require.True(t, repo.accountsByID[1].Schedulable, "活跃 Agent 恢复后必须重新可调度（ClearError 不会恢复 schedulable）")
+	require.False(t, repo.accountsByID[2].Schedulable, "待命 Agent 恢复后仍不可调度")
 }
 
 func TestSIWCGate_AutoRestoreAfterRecheck(t *testing.T) {

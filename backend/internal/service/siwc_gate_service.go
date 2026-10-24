@@ -615,6 +615,13 @@ func (s *SIWCGateService) Restore(ctx context.Context, email string) (*SIWCGateS
 		if err := s.persistGate(ctx, sib.ID, state); err != nil {
 			slog.Warn("siwc_gate.persist_failed", "account_id", sib.ID, "error", err)
 		}
+		// Block 时 SetError 已把 schedulable 置 false，ClearError 不会恢复它；
+		// 只恢复活跃 Agent，待命 Agent 保持不可调度（同一时刻只有一个 Agent 接流量）。
+		if !sib.IsOpenAISIWCStandby() {
+			if err := s.accountRepo.SetSchedulable(ctx, sib.ID, true); err != nil {
+				slog.Warn("siwc_gate.restore_schedulable_failed", "account_id", sib.ID, "error", err)
+			}
+		}
 		if s.runtimeBlocker != nil {
 			s.runtimeBlocker.ClearAccountSchedulingBlock(sib.ID)
 		}

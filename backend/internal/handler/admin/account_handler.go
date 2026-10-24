@@ -70,6 +70,14 @@ type AccountHandler struct {
 	cfg                     *config.Config
 	opencodeGoUsage         *service.OpenCodeGoUsageService
 	openAITokenProvider     openAISIWCForceRefresher
+	siwcAgentPool           *service.SIWCAgentPoolService
+}
+
+// SetSIWCAgentPoolService 注入 SIWC 多 Agent 池（导入凭据后落角色）。
+func (h *AccountHandler) SetSIWCAgentPoolService(pool *service.SIWCAgentPoolService) {
+	if pool != nil {
+		h.siwcAgentPool = pool
+	}
 }
 
 // SetOpenAITokenProvider 注入 token provider，SIWC 账号的手动刷新经它的锁保护路径。

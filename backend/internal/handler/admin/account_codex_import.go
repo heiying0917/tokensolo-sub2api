@@ -392,6 +392,8 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 		if item.IsSIWC {
 			createdItem.AuthMode = service.OpenAIAuthModeSIWC
 			h.verifySIWCImportRefresh(ctx, req, account, &createdItem, &result)
+			// 同邮箱已有活跃 Agent 时新导入的凭据作待命
+			h.siwcAgentPool.AssignNewAgentRole(ctx, account)
 		}
 		result.Items = append(result.Items, createdItem)
 	}

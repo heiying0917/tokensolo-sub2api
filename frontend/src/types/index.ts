@@ -1780,6 +1780,33 @@ export interface OpenAISiwcCreateRequest {
   confirm_mixed_channel_risk?: boolean
   // 同邮箱 Codex OAuth 账号，作为查额度 / 模型列表的管理凭据；不传则后端按 email 自动匹配
   management_account_id?: number | null
+  // 添加 Agent：从同邮箱已有 SIWC Agent 继承分组、代理、优先级、模型白名单等设置
+  inherit_from_account_id?: number | null
+}
+
+/** SIWC Agent 角色：同一 ChatGPT 账号同一时刻只有一个 active 接流量。 */
+export type SiwcAgentRole = 'active' | 'standby'
+
+export interface SiwcAgentView {
+  id: number
+  name: string
+  role: SiwcAgentRole
+  status: string
+  schedulable: boolean
+  usable: boolean
+  error_message?: string
+  agent_name?: string
+  expires_at?: string
+  last_used_at?: string | null
+  created_at: string
+}
+
+export interface SiwcAgentGroup {
+  email: string
+  active_account_id: number
+  management_account_id: number
+  management_account_name?: string
+  agents: SiwcAgentView[]
 }
 
 export interface SiwcGateCheck {

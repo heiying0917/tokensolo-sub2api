@@ -28,6 +28,7 @@ import type {
   SiwcFingerprintResult,
   SiwcGateState,
   SiwcGateSummary,
+  SiwcAgentGroup,
   CheckMixedChannelRequest,
   CheckMixedChannelResponse,
   UpstreamBillingProbeResult,
@@ -833,6 +834,24 @@ export async function runSiwcFingerprint(id: number): Promise<SiwcFingerprintRes
   return data
 }
 
+/** 列出 SIWC 账号所在 ChatGPT 账号下的全部 Agent。 */
+export async function getSiwcAgents(id: number): Promise<SiwcAgentGroup> {
+  const { data } = await apiClient.get<SiwcAgentGroup>(`/admin/openai/siwc/accounts/${id}/agents`)
+  return data
+}
+
+/** 把指定 Agent 设为活跃，同账号其余 Agent 转为待命。 */
+export async function activateSiwcAgent(id: number): Promise<SiwcAgentGroup> {
+  const { data } = await apiClient.post<SiwcAgentGroup>(`/admin/openai/siwc/accounts/${id}/agents/activate`)
+  return data
+}
+
+/** 用新的 SIWC 授权替换单个 Agent 的凭据（必须登录同一 ChatGPT 账号）。 */
+export async function reauthSiwcFromOAuth(id: number, payload: OpenAISiwcExchangeRequest): Promise<Account> {
+  const { data } = await apiClient.post<Account>(`/admin/openai/siwc/accounts/${id}/reauth-from-oauth`, payload)
+  return data
+}
+
 /** 全局闸门汇总：资格受限 / 待恢复数量。 */
 export async function getSiwcGateSummary(): Promise<SiwcGateSummary> {
   const { data } = await apiClient.get<SiwcGateSummary>('/admin/openai/siwc/gate/summary')
@@ -1241,6 +1260,9 @@ export const accountsAPI = {
   exchangeSiwcCode,
   createOpenAISiwc,
   getSiwcGate,
+  getSiwcAgents,
+  activateSiwcAgent,
+  reauthSiwcFromOAuth,
   recheckSiwcGate,
   restoreSiwcGate,
   runSiwcFingerprint,

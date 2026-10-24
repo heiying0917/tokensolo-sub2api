@@ -40,6 +40,10 @@
             </template>
             <!-- SIWC 账号：资格闸门详情 / 降智指纹验证 -->
             <template v-if="isSiwc">
+              <button data-testid="action-siwc-agents" @click="$emit('siwc-agents', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-indigo-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+                <Icon name="users" size="sm" />
+                {{ t('admin.accounts.siwcAgents.menu') }}
+              </button>
               <button data-testid="action-siwc-gate" @click="$emit('siwc-gate', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-rose-600 hover:bg-gray-100 dark:hover:bg-dark-700">
                 <Icon name="shield" size="sm" />
                 {{ t('admin.accounts.siwcGate.menuGate') }}
@@ -83,7 +87,7 @@ import { supportsAccountQuota } from '@/utils/accountQuota'
 import { isSiwcAccount } from '@/utils/siwcAccount'
 
 const props = defineProps<{ show: boolean; account: Account | null; anchorRect: DOMRect | null }>()
-const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow', 'siwc-gate', 'siwc-fingerprint'])
+const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow', 'siwc-gate', 'siwc-fingerprint', 'siwc-agents'])
 const { t } = useI18n()
 const menuRef = ref<HTMLElement | null>(null)
 const { width: viewportWidth, height: viewportHeight } = useWindowSize()

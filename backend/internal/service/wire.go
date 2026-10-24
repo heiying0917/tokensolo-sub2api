@@ -153,6 +153,24 @@ func ProvideSIWCGateService(
 	return svc
 }
 
+// ProvideSIWCAgentPoolService creates the SIWC multi-agent pool and registers
+// its failover hook on every place that can mark an active agent dead.
+func ProvideSIWCAgentPoolService(
+	accountRepo AccountRepository,
+	audit *AuditLogService,
+	lockCache LeaderLockCache,
+	runtimeBlocker AccountRuntimeBlocker,
+	tokenRefresh *TokenRefreshService,
+	rateLimit *RateLimitService,
+	refreshAPI *OAuthRefreshAPI,
+) *SIWCAgentPoolService {
+	svc := NewSIWCAgentPoolService(accountRepo, audit, lockCache, runtimeBlocker)
+	tokenRefresh.SetSIWCAgentFailover(svc)
+	rateLimit.SetSIWCAgentFailover(svc)
+	refreshAPI.SetSIWCAgentFailover(svc)
+	return svc
+}
+
 // ProvideTokenRefreshService creates and starts TokenRefreshService
 func ProvideTokenRefreshService(
 	accountRepo AccountRepository,
@@ -940,6 +958,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAIOAuthService,
 	ProvideOpenAISIWCOAuthService,
 	ProvideSIWCGateService,
+	ProvideSIWCAgentPoolService,
 	ProvideGrokOAuthService,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
 	NewGeminiOAuthService,

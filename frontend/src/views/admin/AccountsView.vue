@@ -304,6 +304,16 @@
             <div class="flex items-center gap-1.5">
               <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
               <SiwcGateBadge :account="row" @show-gate="handleShowSiwcGate" />
+              <button
+                v-if="isSiwcAccount(row)"
+                type="button"
+                :class="['badge text-xs', isSiwcStandby(row) ? 'badge-gray' : 'badge-success']"
+                :data-testid="`siwc-agent-badge-${row.id}`"
+                :title="t('admin.accounts.siwcAgents.menu')"
+                @click.stop="handleShowSiwcAgents(row)"
+              >
+                {{ isSiwcStandby(row) ? t('admin.accounts.siwcAgents.roleStandby') : t('admin.accounts.siwcAgents.roleActive') }}
+              </button>
             </div>
           </template>
           <template #cell-schedulable="{ row }">
@@ -475,7 +485,7 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" @siwc-gate="handleShowSiwcGate" @siwc-fingerprint="handleSiwcFingerprint" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" @siwc-gate="handleShowSiwcGate" @siwc-fingerprint="handleSiwcFingerprint" @siwc-agents="handleShowSiwcAgents" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -490,6 +500,7 @@
       @updated="handleBulkUpdated"
     />
     <TempUnschedStatusModal :show="showTempUnsched" :account="tempUnschedAcc" @close="showTempUnsched = false" @reset="handleTempUnschedReset" />
+    <SiwcAgentsModal :show="showSiwcAgents" :account="siwcAgentsAcc" :reauth-account-id="siwcAgentsReauthId" @close="handleCloseSiwcAgents" @changed="load" />
     <SiwcGateModal :show="showSiwcGate" :account="siwcGateAcc" @close="showSiwcGate = false" @updated="handleSiwcGateUpdated" @restored="handleSiwcGateRestored" />
     <ConfirmDialog :show="showDeleteDialog" :title="t('admin.accounts.deleteAccount')" :message="t('admin.accounts.deleteConfirm', { name: deletingAcc?.name })" :confirm-text="t('common.delete')" :cancel-text="t('common.cancel')" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
     <ConfirmDialog :show="showCreateShadowDialog" :title="t('admin.accounts.createSparkShadow')" :message="t('admin.accounts.createSparkShadowConfirm', { name: creatingShadowAcc?.name })" @confirm="confirmCreateSparkShadow" @cancel="showCreateShadowDialog = false" />
@@ -524,7 +535,7 @@ import DataTable from '@/components/common/DataTable.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
-import { CreateAccountModal, EditAccountModal, BulkEditAccountModal, SyncFromCrsModal, TempUnschedStatusModal, SiwcGateBadge, SiwcGateModal } from '@/components/account'
+import { CreateAccountModal, EditAccountModal, BulkEditAccountModal, SyncFromCrsModal, TempUnschedStatusModal, SiwcGateBadge, SiwcGateModal, SiwcAgentsModal } from '@/components/account'
 import { isSiwcAccount } from '@/utils/siwcAccount'
 import AccountTableActions from '@/components/admin/account/AccountTableActions.vue'
 import AccountTableFilters from '@/components/admin/account/AccountTableFilters.vue'
@@ -2398,7 +2409,15 @@ const handleSchedule = async (a: Account) => {
   }
 }
 const closeSchedulePanel = () => { showSchedulePanel.value = false; scheduleAcc.value = null; scheduleModelOptions.value = [] }
-const handleReAuth = (a: Account) => { reAuthAcc.value = a; showReAuth.value = true }
+const handleReAuth = (a: Account) => {
+  // SIWC 用自己的授权流程替换凭据，不能走 Codex 重新授权（会把 Codex 令牌合并进 SIWC 行）
+  if (isSiwcAccount(a)) {
+    handleShowSiwcAgents(a, a.id)
+    return
+  }
+  reAuthAcc.value = a
+  showReAuth.value = true
+}
 const duplicatingAccountIDs = new Set<number>()
 const handleDuplicateAccount = async (a: Account) => {
   if (duplicatingAccountIDs.has(a.id)) return
@@ -2515,6 +2534,12 @@ const handleDelete = (a: Account) => { deletingAcc.value = a; showDeleteDialog.v
 const confirmDelete = async () => { if(!deletingAcc.value) return; try { await adminAPI.accounts.delete(deletingAcc.value.id); showDeleteDialog.value = false; deletingAcc.value = null; reload() } catch (error) { console.error('Failed to delete account:', error) } }
 const handleToggleSchedulable = async (a: Account) => {
   const nextSchedulable = !a.schedulable
+  // 待命 SIWC Agent 由「Agent 管理」切换，不能直接打开调度（同一账号只允许一个活跃 Agent）
+  if (nextSchedulable && isSiwcStandby(a)) {
+    appStore.showInfo(t('admin.accounts.siwcAgents.standbyToggleHint'))
+    handleShowSiwcAgents(a)
+    return
+  }
   togglingSchedulable.value = a.id
   try {
     const updated = await adminAPI.accounts.setSchedulable(a.id, nextSchedulable)
@@ -2547,6 +2572,21 @@ const loadSiwcGateSummary = async () => {
 }
 watch(hasSiwcAccounts, (has) => { if (has) loadSiwcGateSummary(); else siwcGateSummary.value = null }, { immediate: true })
 const handleShowSiwcGate = (a: Account) => { siwcGateAcc.value = a; showSiwcGate.value = true }
+// ---------- SIWC 多 Agent ----------
+const showSiwcAgents = ref(false)
+const siwcAgentsAcc = ref<Account | null>(null)
+const siwcAgentsReauthId = ref<number | null>(null)
+const isSiwcStandby = (a: Account) => isSiwcAccount(a) && a.extra?.siwc_agent_role === 'standby'
+const handleShowSiwcAgents = (a: Account, reauthId: number | null = null) => {
+  siwcAgentsAcc.value = a
+  siwcAgentsReauthId.value = reauthId
+  showSiwcAgents.value = true
+}
+const handleCloseSiwcAgents = () => {
+  showSiwcAgents.value = false
+  siwcAgentsAcc.value = null
+  siwcAgentsReauthId.value = null
+}
 const patchSiwcExtra = (accountId: number, gate: SiwcGateState | null, fingerprint: SiwcFingerprintResult | null) => {
   const account = accounts.value.find(item => item.id === accountId)
   if (!account) return

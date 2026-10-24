@@ -158,7 +158,45 @@ export function useOpenAISiwcOAuth() {
     }
   }
 
+  /** 用回调 URL 重新授权已有 Agent（替换凭据，保留角色与设置）；失败返回 null。 */
+  const reauthFromCallback = async (accountId: number, callbackUrl: string): Promise<Account | null> => {
+    if (!sessionId.value) {
+      error.value = t('admin.accounts.oauth.openai.siwcSessionMissing')
+      return null
+    }
+    if (phase.value === 'expired') {
+      error.value = t('admin.accounts.oauth.openai.siwcSessionExpired')
+      return null
+    }
+    loading.value = true
+    error.value = ''
+    const previousPhase = phase.value
+    phase.value = 'submitting'
+    try {
+      const account = await adminAPI.accounts.reauthSiwcFromOAuth(accountId, {
+        session_id: sessionId.value,
+        callback_url: callbackUrl
+      })
+      stopTicker()
+      phase.value = 'idle'
+      return account
+    } catch (err: unknown) {
+      error.value = extractI18nErrorMessage(
+        err,
+        t,
+        'admin.accounts.oauth.openai.errors',
+        t('admin.accounts.siwcAgents.reauthFailed')
+      )
+      phase.value = previousPhase
+      appStore.showError(error.value)
+      return null
+    } finally {
+      loading.value = false
+    }
+  }
+
   return {
+    reauthFromCallback,
     authUrl,
     sessionId,
     oauthState,

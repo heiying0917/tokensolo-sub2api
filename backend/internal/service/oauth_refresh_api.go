@@ -167,10 +167,19 @@ func snapshotOAuthRefreshAccount(account *Account) *Account {
 // OAuthRefreshAPI 统一的 OAuth Token 刷新入口
 // 封装分布式锁、进程内互斥锁、DB 重读、已刷新检查、竞争恢复等通用逻辑
 type OAuthRefreshAPI struct {
-	accountRepo AccountRepository
-	tokenCache  GeminiTokenCache // 可选，nil = 无分布式锁
-	lockTTL     time.Duration
-	localLocks  sync.Map // key: cacheKey string -> value: *contextMutex
+	// siwcAgentFailover 持久化失败把活跃 SIWC Agent 置错后切到待命 Agent（可选）。
+	siwcAgentFailover siwcAgentFailoverer
+	accountRepo       AccountRepository
+	tokenCache        GeminiTokenCache // 可选，nil = 无分布式锁
+	lockTTL           time.Duration
+	localLocks        sync.Map // key: cacheKey string -> value: *contextMutex
+}
+
+// SetSIWCAgentFailover 注入 SIWC Agent 故障转移（可选依赖）。
+func (api *OAuthRefreshAPI) SetSIWCAgentFailover(f siwcAgentFailoverer) {
+	if api != nil {
+		api.siwcAgentFailover = f
+	}
 }
 
 // NewOAuthRefreshAPI 创建统一刷新 API
@@ -507,6 +516,8 @@ func (api *OAuthRefreshAPI) persistCredentialsDetached(parent context.Context, a
 	defer cancel()
 	if setErr := api.accountRepo.SetError(errCtx, account.ID, "oauth refresh rotated upstream but credential persistence failed; re-authorize"); setErr != nil {
 		slog.Error("oauth_refresh_detached_persist_set_error_failed", "account_id", account.ID, "error", setErr)
+	} else if account.IsOpenAISIWC() && api.siwcAgentFailover != nil {
+		api.siwcAgentFailover.Failover(errCtx, account)
 	}
 	return &providerCycleContainmentRefreshError{err: fmt.Errorf("%w: %v", errOAuthRefreshCredentialPersist, lastErr)}
 }
