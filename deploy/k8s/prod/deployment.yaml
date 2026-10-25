@@ -40,7 +40,7 @@ spec:
       - name: sub2api
         # 日常发版走 /tke-release 的 kubectl set image，此处仅为首次 apply 的初始版本
         # 2026-10-23 起切换到新 fork heiying0917/tokensolo-sub2api（占位 tag，首次发版后同步为实际 tag）
-        image: ghcr.io/heiying0917/tokensolo-sub2api:v2026.10.23.1
+        image: ghcr.io/heiying0917/tokensolo-sub2api:v2026.10.25.1
         ports:
         - containerPort: 8080
         envFrom:
